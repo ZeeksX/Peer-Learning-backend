@@ -13,6 +13,19 @@ export const registerLearner = async (req, res) => {
   try {
     const { name, email, password, interests } = req.body;
 
+    // Validate required fields and show only missing ones
+    const requiredFields = ['name', 'email', 'password'];
+    const missingFields = requiredFields.filter(field => !req.body[field]);
+
+    if (missingFields.length > 0) {
+      return sendError(
+        res,
+        `Missing required fields: ${missingFields.join(', ')}`,
+        'MISSING_FIELDS',
+        400
+      );
+    }
+
     const userExists = await User.findOne({ email });
     if (userExists) {
       return sendError(res, 'User already exists', 'USER_EXISTS', 400);
