@@ -7,6 +7,16 @@ import User from '../models/User.js';
 import LearnerProfile from '../models/LearnerProfile.js';
 import { sendSuccess, sendError } from '../middleware/responseHandler.js';
 
+// --- Profile Management ---
+export const getMyProfile = async (req, res) => {
+  try {
+    const profile = await LearnerProfile.findOne({ userId: req.user._id }).populate('userId', 'name email role');
+    return sendSuccess(res, profile);
+  } catch (error) {
+    return sendError(res, error.message, 'FETCH_PROFILE_FAILED', 500);
+  }
+};
+
 // --- Course Enrollment & Discovery ---
 export const getCourses = async (req, res) => {
   try {

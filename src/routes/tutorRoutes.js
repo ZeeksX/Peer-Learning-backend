@@ -26,6 +26,11 @@ router.post('/auth/logout', logoutTutor);
 
 // Protected routes (Tutor only)
 router.use(protect);
+
+// Auth Me route (Protected but accessible before tutorOnly check if needed, 
+// though here it's fine after protect)
+router.get('/auth/me', getMyProfile);
+
 router.use(tutorOnly);
 
 // Profile

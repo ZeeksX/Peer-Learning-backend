@@ -1,6 +1,7 @@
 import express from 'express';
 import { registerLearner, loginLearner, logoutLearner } from '../controllers/learnerAuthController.js';
 import { 
+  getMyProfile,
   getCourses, 
   enrollInCourse, 
   getMyProgress, 
@@ -24,6 +25,9 @@ router.get('/courses', getCourses);
 
 // Protected routes
 router.use(protect);
+
+// Auth Me route
+router.get('/auth/me', getMyProfile);
 
 // Enrollment
 router.post('/courses/:id/enroll', enrollInCourse);
