@@ -33,6 +33,7 @@ import {
   oauthCallback
 } from '../controllers/googleMeetController.js';
 
+import { getNotifications, clearNotifications } from '../controllers/notificationController.js';
 import { protect, tutorOnly } from '../middleware/authMiddleware.js';
 
 const router = express.Router();
@@ -53,6 +54,11 @@ router.route('/messages')
   .post(sendMessage);
 router.route('/messages/:userId')
   .get(getMessages);
+
+// Notifications
+router.route('/notifications')
+  .get(getNotifications)
+  .delete(clearNotifications);
 
 // --- Tutor Exclusive Routes ---
 router.use(tutorOnly);

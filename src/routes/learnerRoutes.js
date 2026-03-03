@@ -20,6 +20,7 @@ import {
   rateSession,
   getSessionRating
 } from '../controllers/learnerController.js';
+import { getNotifications, clearNotifications } from '../controllers/notificationController.js';
 import { protect, learnerOnly } from '../middleware/authMiddleware.js';
 
 const router = express.Router();
@@ -75,6 +76,11 @@ router.route('/courses/:id/enroll')
 router.route('/assessments/:id')
   .get(getAssessmentDetails)
   .post(submitAssessment); // Using .post() for submissions on the same ID path
+
+// Notifications
+router.route('/notifications')
+  .get(getNotifications)
+  .delete(clearNotifications);
 
 // Peer Interaction & Messaging
 router.route('/peers')
