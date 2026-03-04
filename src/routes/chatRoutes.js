@@ -11,6 +11,7 @@ import {
     addReaction,
     removeReaction
 } from '../controllers/chatController.js';
+import { getSessionChat, sendSessionChat } from '../controllers/tutorController.js';
 import { protect } from '../middleware/authMiddleware.js';
 
 const router = express.Router();
@@ -41,5 +42,10 @@ router.patch('/messages/:messageId', editMessage);
 router.route('/messages/:messageId/react')
     .post(addReaction)
     .delete(removeReaction);
+
+// Session group chat (accessible to tutors and enrolled students)
+router.route('/sessions/:sessionId/chat')
+    .get(getSessionChat)
+    .post(sendSessionChat);
 
 export default router;

@@ -101,8 +101,7 @@ router.route('/sessions')
 
 // Session Chat — must be defined EARLY, before /sessions/:id pattern
 router.route('/sessions/:sessionId/chat')
-  .get(getSessionChat)
-  .post(sendSessionChat);
+  .get(getSessionChat);
 
 // Join Requests review for tutors
 // MUST be defined before /sessions/:id (with :paramId)

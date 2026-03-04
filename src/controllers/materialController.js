@@ -7,7 +7,7 @@ import { sendError, sendSuccess } from '../middleware/responseHandler.js';
 const normalizePath = (value) => value.replace(/\\/g, '/');
 
 export const uploadMaterialFile = async (req, res) => {
-  try {
+  try { 
     if (!req.file) {
       return sendError(res, 'Please upload a file', 'MISSING_FILE', 400);
     }

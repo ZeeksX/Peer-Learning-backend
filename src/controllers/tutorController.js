@@ -139,6 +139,12 @@ export const createSession = async (req, res) => {
       maxParticipants: maxParticipants || 1,
     });
 
+    // Create group conversation for this session with tutor as initial participant
+    await Conversation.create({
+      sessionId: session._id,
+      participants: [req.user._id]
+    });
+
     return sendSuccess(res, session, 201);
   } catch (error) {
     console.error('Error creating session:', error);
@@ -517,6 +523,12 @@ export const addStudentToSession = async (req, res) => {
     const updatedSession = await Session.findById(session._id).populate('studentIds', 'name email avatar');
 
     if (!alreadyAdded) {
+      const conversation = await Conversation.findOne({ sessionId: session._id });
+      if (conversation && !conversation.participants.includes(student._id)) {
+        conversation.participants.push(student._id);
+        await conversation.save();
+      }
+
       broadcast(student._id, 'session:student-added', {
         sessionId: session._id,
         session: {
@@ -589,6 +601,14 @@ export const removeStudentFromSession = async (req, res) => {
     await session.save();
 
     const updatedSession = await Session.findById(session._id).populate('studentIds', 'name email avatar');
+
+    const conversation = await Conversation.findOne({ sessionId: session._id });
+    if (conversation) {
+      conversation.participants = conversation.participants.filter(
+        (id) => id.toString() !== student._id.toString()
+      );
+      await conversation.save();
+    }
 
     broadcast(student._id, 'session:student-removed', {
       sessionId: session._id,
@@ -813,22 +833,10 @@ export const getSessionChat = async (req, res) => {
     const session = await Session.findOne({ _id: sessionId, tutorId: req.tutor._id });
     if (!session) return sendError(res, 'Session not found', 'SESSION_NOT_FOUND', 404);
 
-    // Find or create conversation for this session
-    const participants = [req.user._id, ...(session.studentIds || [])];
-    const sortedIds = participants.map(p => p.toString()).sort();
-
-    let conversation = await Conversation.findOne({
-      $expr: {
-        $and: [
-          { $eq: [{ $size: '$participants' }, participants.length] },
-          { $setIsSubset: ['$participants', participants] }
-        ]
-      }
-    });
-
+    // Get pre-created group conversation for this session
+    const conversation = await Conversation.findOne({ sessionId: session._id });
     if (!conversation) {
-      // Create session conversation if it doesn't exist
-      conversation = await Conversation.create({ participants: sortedIds });
+      return sendError(res, 'Session chat not found. Please try again.', 'CONVERSATION_NOT_FOUND', 404);
     }
 
     // Fetch messages
@@ -867,31 +875,31 @@ export const getSessionChat = async (req, res) => {
 export const sendSessionChat = async (req, res) => {
   try {
     const { sessionId } = req.params;
-    const { text } = req.body;
+    let { text } = req.body;
 
-    if (!text || text.trim().length === 0) {
-      return sendError(res, 'text is required', 'VALIDATION_ERROR', 400);
+    if (!text || typeof text !== 'string' || text.trim().length === 0) {
+      return sendError(res, 'Message text is required and cannot be empty', 'VALIDATION_ERROR', 400);
     }
 
-    // Verify tutor owns this session
-    const session = await Session.findOne({ _id: sessionId, tutorId: req.tutor._id });
+    // Trim whitespace but preserve newlines
+    text = text.trim();
+
+    // Verify session exists
+    const session = await Session.findById(sessionId);
     if (!session) return sendError(res, 'Session not found', 'SESSION_NOT_FOUND', 404);
 
-    // Find or create conversation for this session
-    const participants = [req.user._id, ...(session.studentIds || [])];
-    const sortedIds = participants.map(p => p.toString()).sort();
+    // Verify user is either the tutor or an enrolled student
+    const isTutor = req.tutor && req.tutor._id.toString() === session.tutorId.toString();
+    const isStudent = session.studentIds?.some(id => id.toString() === req.user._id.toString());
 
-    let conversation = await Conversation.findOne({
-      $expr: {
-        $and: [
-          { $eq: [{ $size: '$participants' }, participants.length] },
-          { $setIsSubset: ['$participants', participants] }
-        ]
-      }
-    });
+    if (!isTutor && !isStudent) {
+      return sendError(res, 'You are not enrolled in this session', 'FORBIDDEN', 403);
+    }
 
+    // Get pre-created group conversation for this session
+    const conversation = await Conversation.findOne({ sessionId: session._id });
     if (!conversation) {
-      conversation = await Conversation.create({ participants: sortedIds });
+      return sendError(res, 'Session chat not found. Please try again.', 'CONVERSATION_NOT_FOUND', 404);
     }
 
     // Create message
@@ -923,8 +931,8 @@ export const sendSessionChat = async (req, res) => {
     conversation.lastMessageAt = msg.createdAt;
     await conversation.save();
 
-    // Broadcast to all participants via WebSocket
-    participants.forEach(participantId => {
+    // Broadcast to all session participants via WebSocket
+    conversation.participants.forEach(participantId => {
       if (participantId.toString() !== req.user._id.toString()) {
         broadcast(participantId.toString(), 'message:new', {
           conversationId: conversation._id,
