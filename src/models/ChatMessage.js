@@ -5,7 +5,14 @@ const chatMessageSchema = new mongoose.Schema({
     conversationId: { type: mongoose.Schema.Types.ObjectId, ref: 'Conversation', required: true },
     senderId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     text: { type: String, required: true },
-    read: { type: Boolean, default: false }
+    read: { type: Boolean, default: false },
+    isEdited: { type: Boolean, default: false },
+    editedAt: { type: Date },
+    reactions: [{
+        userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+        emoji: { type: String, required: true },
+        createdAt: { type: Date, default: Date.now }
+    }]
 }, { timestamps: true });
 
 // Index for efficient paginated message fetching

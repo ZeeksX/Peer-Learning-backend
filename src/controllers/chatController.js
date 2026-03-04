@@ -2,8 +2,6 @@
 import Conversation from '../models/Conversation.js';
 import ChatMessage from '../models/ChatMessage.js';
 import User from '../models/User.js';
-import Session from '../models/Session.js';
-import Tutor from '../models/Tutor.js';
 import { sendSuccess, sendError } from '../middleware/responseHandler.js';
 import { broadcast, emitToConversation } from '../services/wsService.js';
 
@@ -36,6 +34,9 @@ const formatMessage = (msg) => ({
         : { _id: msg.senderId },
     text: msg.text,
     read: msg.read,
+    isEdited: msg.isEdited || false,
+    editedAt: msg.editedAt || null,
+    reactions: msg.reactions || [],
     createdAt: msg.createdAt
 });
 
@@ -137,7 +138,7 @@ export const createConversation = async (req, res) => {
 
 /**
  * POST /v1/chat/conversations/:conversationId/messages
- * HTTP fallback for sending a message.
+ * HTTP fallback for sending a message. Preserves newlines.
  */
 export const sendMessage = async (req, res) => {
     try {
@@ -145,7 +146,10 @@ export const sendMessage = async (req, res) => {
         const myId = req.user._id;
         const { text } = req.body;
 
-        if (!text?.trim()) return sendError(res, 'text is required', 'VALIDATION_ERROR', 400);
+        // Check if message is empty or only whitespace, but preserve newlines in actual content
+        if (!text || text.trim().length === 0) {
+            return sendError(res, 'text is required', 'VALIDATION_ERROR', 400);
+        }
 
         const conversation = await Conversation.findById(conversationId);
         if (!conversation) return sendError(res, 'Conversation not found', 'CONVERSATION_NOT_FOUND', 404);
@@ -153,16 +157,18 @@ export const sendMessage = async (req, res) => {
             return sendError(res, 'Access denied', 'FORBIDDEN', 403);
         }
 
-        const msg = await ChatMessage.create({ conversationId, senderId: myId, text: text.trim() });
+        // Store the message with newlines preserved
+        const msg = await ChatMessage.create({ conversationId, senderId: myId, text });
         const sender = await User.findById(myId).select('name avatar');
 
-        // Update conversation denorm
+        // Update conversation denorm (use single-line version for preview)
         const recipientId = conversation.participants.find(p => p.toString() !== myId.toString());
         const unreadCounts = conversation.unreadCounts || new Map();
         if (recipientId) {
             unreadCounts.set(recipientId.toString(), (unreadCounts.get(recipientId.toString()) || 0) + 1);
         }
-        conversation.lastMessage = text.trim();
+        // Replace newlines with space for lastMessage preview
+        conversation.lastMessage = text.replace(/\n/g, ' ').trim();
         conversation.lastMessageAt = msg.createdAt;
         conversation.unreadCounts = unreadCounts;
         await conversation.save();
@@ -216,46 +222,19 @@ export const markRead = async (req, res) => {
 
 /**
  * GET /v1/chat/contacts
- * Tutors → students across their sessions + all other tutors.
- * Learners → tutors of sessions they're in + all other learners.
+ * Returns all users (tutors and students) except the current user.
+ * Everyone can message everyone.
  */
 export const getContacts = async (req, res) => {
     try {
         const myId = req.user._id;
-        const myRole = req.user.role;
 
-        const contactSet = new Map(); // userId string → User doc
+        // Get all users except the current user
+        const allUsers = await User.find({ _id: { $ne: myId } })
+            .select('name email role avatar')
+            .sort({ name: 1 });
 
-        const addUser = (user) => {
-            if (user && user._id.toString() !== myId.toString()) {
-                contactSet.set(user._id.toString(), user);
-            }
-        };
-
-        if (myRole === 'tutor') {
-            // All students enrolled in this tutor's sessions
-            const tutorRecord = await Tutor.findOne({ userId: myId });
-            if (tutorRecord) {
-                const sessions = await Session.find({ tutorId: tutorRecord._id })
-                    .populate('studentIds', 'name email role avatar');
-                sessions.forEach(s => s.studentIds.forEach(addUser));
-            }
-            // All other tutors (via User collection)
-            const tutors = await User.find({ role: 'tutor', _id: { $ne: myId } }).select('name email role avatar');
-            tutors.forEach(addUser);
-        } else {
-            // Learner: tutors of sessions they're enrolled in
-            const sessions = await Session.find({ studentIds: myId })
-                .populate({ path: 'tutorId', populate: { path: 'userId', select: 'name email role avatar' } });
-            sessions.forEach(s => {
-                if (s.tutorId?.userId?._id) addUser(s.tutorId.userId);
-            });
-            // All other learners
-            const learners = await User.find({ role: 'student', _id: { $ne: myId } }).select('name email role avatar');
-            learners.forEach(addUser);
-        }
-
-        const contacts = Array.from(contactSet.values()).map(u => ({
+        const contacts = allUsers.map(u => ({
             _id: u._id,
             name: u.name,
             email: u.email,
@@ -268,3 +247,147 @@ export const getContacts = async (req, res) => {
         return sendError(res, error.message, 'FETCH_CONTACTS_FAILED', 500);
     }
 };
+
+/**
+ * PATCH /v1/chat/messages/:messageId
+ * Edit a message (only by the sender, within reasonable time).
+ */
+export const editMessage = async (req, res) => {
+    try {
+        const { messageId } = req.params;
+        const myId = req.user._id;
+        const { text } = req.body;
+
+        if (!text || text.trim().length === 0) {
+            return sendError(res, 'text is required', 'VALIDATION_ERROR', 400);
+        }
+
+        const message = await ChatMessage.findById(messageId);
+        if (!message) return sendError(res, 'Message not found', 'MESSAGE_NOT_FOUND', 404);
+
+        // Only sender can edit
+        if (message.senderId.toString() !== myId.toString()) {
+            return sendError(res, 'You can only edit your own messages', 'FORBIDDEN', 403);
+        }
+
+        // Optional: Add time limit for editing (e.g., 15 minutes)
+        const fifteenMinutes = 15 * 60 * 1000;
+        if (Date.now() - message.createdAt.getTime() > fifteenMinutes) {
+            return sendError(res, 'Cannot edit messages older than 15 minutes', 'EDIT_TIME_EXPIRED', 403);
+        }
+
+        message.text = text;
+        message.isEdited = true;
+        message.editedAt = new Date();
+        await message.save();
+
+        const sender = await User.findById(myId).select('name avatar');
+        const formatted = formatMessage({ ...message.toObject(), senderId: sender });
+
+        // Notify other participants via WebSocket
+        await emitToConversation(message.conversationId, myId, 'message:edited', {
+            conversationId: message.conversationId,
+            message: formatted
+        });
+
+        return sendSuccess(res, formatted);
+    } catch (error) {
+        return sendError(res, error.message, 'EDIT_MESSAGE_FAILED', 500);
+    }
+};
+
+/**
+ * POST /v1/chat/messages/:messageId/react
+ * Add or update a reaction to a message.
+ */
+export const addReaction = async (req, res) => {
+    try {
+        const { messageId } = req.params;
+        const myId = req.user._id;
+        const { emoji } = req.body;
+
+        if (!emoji || typeof emoji !== 'string' || emoji.trim().length === 0) {
+            return sendError(res, 'emoji is required', 'VALIDATION_ERROR', 400);
+        }
+
+        const message = await ChatMessage.findById(messageId);
+        if (!message) return sendError(res, 'Message not found', 'MESSAGE_NOT_FOUND', 404);
+
+        // Verify user is part of the conversation
+        const conversation = await Conversation.findById(message.conversationId);
+        if (!conversation || !conversation.participants.some(p => p.toString() === myId.toString())) {
+            return sendError(res, 'Access denied', 'FORBIDDEN', 403);
+        }
+
+        // Remove existing reaction from this user (allows toggling)
+        message.reactions = message.reactions || [];
+        const existingIndex = message.reactions.findIndex(r => r.userId.toString() === myId.toString());
+        
+        if (existingIndex >= 0) {
+            // If same emoji, remove (toggle off), otherwise update
+            if (message.reactions[existingIndex].emoji === emoji.trim()) {
+                message.reactions.splice(existingIndex, 1);
+            } else {
+                message.reactions[existingIndex].emoji = emoji.trim();
+                message.reactions[existingIndex].createdAt = new Date();
+            }
+        } else {
+            // Add new reaction
+            message.reactions.push({
+                userId: myId,
+                emoji: emoji.trim(),
+                createdAt: new Date()
+            });
+        }
+
+        await message.save();
+
+        const sender = await User.findById(message.senderId).select('name avatar');
+        const formatted = formatMessage({ ...message.toObject(), senderId: sender });
+
+        // Notify other participants via WebSocket
+        await emitToConversation(message.conversationId, myId, 'message:reaction', {
+            conversationId: message.conversationId,
+            message: formatted
+        });
+
+        return sendSuccess(res, formatted);
+    } catch (error) {
+        return sendError(res, error.message, 'ADD_REACTION_FAILED', 500);
+    }
+};
+
+/**
+ * DELETE /v1/chat/messages/:messageId/react
+ * Remove user's reaction from a message.
+ */
+export const removeReaction = async (req, res) => {
+    try {
+        const { messageId } = req.params;
+        const myId = req.user._id;
+
+        const message = await ChatMessage.findById(messageId);
+        if (!message) return sendError(res, 'Message not found', 'MESSAGE_NOT_FOUND', 404);
+
+        message.reactions = message.reactions || [];
+        const existingIndex = message.reactions.findIndex(r => r.userId.toString() === myId.toString());
+        
+        if (existingIndex >= 0) {
+            message.reactions.splice(existingIndex, 1);
+            await message.save();
+        }
+
+        const sender = await User.findById(message.senderId).select('name avatar');
+        const formatted = formatMessage({ ...message.toObject(), senderId: sender });
+
+        await emitToConversation(message.conversationId, myId, 'message:reaction', {
+            conversationId: message.conversationId,
+            message: formatted
+        });
+
+        return sendSuccess(res, formatted);
+    } catch (error) {
+        return sendError(res, error.message, 'REMOVE_REACTION_FAILED', 500);
+    }
+};
+

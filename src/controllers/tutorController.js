@@ -7,7 +7,7 @@ import Review from '../models/Review.js';
 import Message from '../models/Message.js';
 import SessionJoinRequest from '../models/SessionJoinRequest.js';
 import { sendSuccess, sendError } from '../middleware/responseHandler.js';
-import { getOrCreatePermanentGoogleMeetLink } from '../services/googleMeetService.js';
+import { getOrCreatePermanentGoogleMeetLink, generateSimpleMeetLink } from '../services/googleMeetService.js';
 
 // --- Profile Management ---
 export const getMyProfile = async (req, res) => {
@@ -44,38 +44,56 @@ export const createSession = async (req, res) => {
       startTime,
       endTime,
       maxParticipants,
-      // FIX: Accept meetingLink from frontend (already created by googleMeetService)
-      // If frontend sends a pre-generated link, use it directly.
-      // Only auto-generate if no link was provided AND Google is connected.
       meetingLink: clientMeetingLink,
       meetingProvider,
       meetingId: clientMeetingId,
+      autoGenerateMeet = true, // New option to control auto-generation
     } = req.body;
 
     let meetingLink = clientMeetingLink || null;
     let meetingId = clientMeetingId || null;
+    let meetingProvider_final = meetingProvider || 'google_meet';
 
-    // Only auto-generate a Meet link if:
-    // - frontend didn't already provide one
-    // - tutor has Google OAuth connected
-    if (!meetingLink && req.tutor.googleOAuthRefreshToken) {
+    // Auto-generate meet link if not provided
+    if (!meetingLink && autoGenerateMeet !== false) {
       try {
-        const durationMinutes = startTime && endTime
-          ? Math.max(1, Math.ceil((new Date(endTime).getTime() - new Date(startTime).getTime()) / 60000))
-          : 60;
+        // Strategy 1: Try OAuth-based permanent link if tutor has connected Google
+        if (req.tutor.googleOAuthRefreshToken) {
+          const durationMinutes = startTime && endTime
+            ? Math.max(1, Math.ceil((new Date(endTime).getTime() - new Date(startTime).getTime()) / 60000))
+            : 60;
 
-        const permanentLink = await getOrCreatePermanentGoogleMeetLink({
-          tutorId: req.tutor._id,
-          meetingTitle: title || subject || 'Tutor Session',
-          scheduledTime: startTime,
-          durationMinutes
-        });
+          const permanentLink = await getOrCreatePermanentGoogleMeetLink({
+            tutorId: req.tutor._id,
+            meetingTitle: title || subject || 'Tutor Session',
+            scheduledTime: startTime,
+            durationMinutes
+          });
 
-        meetingLink = permanentLink.joinUrl || null;
-        meetingId = permanentLink.meetingId || null;
+          meetingLink = permanentLink.joinUrl || null;
+          meetingId = permanentLink.meetingId || null;
+        } else {
+          // Strategy 2: Use simple meet link (no OAuth required)
+          const simpleMeet = generateSimpleMeetLink({
+            tutorId: req.tutor._id,
+            sessionId: null,
+            prefix: 'session'
+          });
+          
+          meetingLink = simpleMeet.joinUrl;
+          meetingId = simpleMeet.meetingId;
+          console.log('Generated simple meet link (no OAuth):', meetingLink);
+        }
       } catch (meetErr) {
-        // Don't fail session creation if Meet link generation fails
-        console.error('Google Meet auto-generation failed (non-fatal):', meetErr.message);
+        // Fallback: If OAuth fails, use simple meet link
+        console.error('OAuth-based meet generation failed, falling back to simple link:', meetErr.message);
+        const simpleMeet = generateSimpleMeetLink({
+          tutorId: req.tutor._id,
+          sessionId: null,
+          prefix: 'session'
+        });
+        meetingLink = simpleMeet.joinUrl;
+        meetingId = simpleMeet.meetingId;
       }
     }
 
@@ -88,7 +106,7 @@ export const createSession = async (req, res) => {
       startTime,
       endTime,
       meetingLink: meetingLink || undefined,
-      meetingProvider: meetingLink ? (meetingProvider || 'google_meet') : undefined,
+      meetingProvider: meetingLink ? meetingProvider_final : undefined,
       meetingId: meetingId || undefined,
       maxParticipants: maxParticipants || 1,
     });
@@ -318,9 +336,107 @@ export const getMyStudents = async (req, res) => {
       });
     });
 
+    const tutorWithStudents = await Tutor.findById(req.tutor._id)
+      .populate('studentIds', 'name email avatar');
+
+    (tutorWithStudents?.studentIds || []).forEach(student => {
+      const key = student._id.toString();
+      if (!studentsMap.has(key)) {
+        studentsMap.set(key, {
+          _id: student._id,
+          name: student.name,
+          email: student.email,
+          avatar: student.avatar || null,
+          sessions: [],
+          totalSessions: 0,
+          completedSessions: 0,
+          upcomingSessions: 0
+        });
+      }
+    });
+
     return sendSuccess(res, Array.from(studentsMap.values()));
   } catch (error) {
     return sendError(res, error.message, 'FETCH_STUDENTS_FAILED', 500);
+  }
+};
+
+export const searchStudents = async (req, res) => {
+  try {
+    const search = (req.query.search || '').trim();
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const limit = Math.max(1, Math.min(50, parseInt(req.query.limit, 10) || 20));
+    const skip = (page - 1) * limit;
+
+    const query = { role: 'student' };
+    if (search) {
+      query.$or = [
+        { name: { $regex: search, $options: 'i' } },
+        { email: { $regex: search, $options: 'i' } }
+      ];
+    }
+
+    const [students, total] = await Promise.all([
+      User.find(query)
+        .select('name email role createdAt')
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit),
+      User.countDocuments(query)
+    ]);
+
+    const existingStudentIds = new Set((req.tutor.studentIds || []).map(id => id.toString()));
+
+    const results = students.map(student => ({
+      _id: student._id,
+      name: student.name,
+      email: student.email,
+      role: student.role,
+      createdAt: student.createdAt,
+      isAdded: existingStudentIds.has(student._id.toString())
+    }));
+
+    return sendSuccess(res, {
+      students: results,
+      pagination: {
+        page,
+        limit,
+        total,
+        hasMore: page * limit < total
+      }
+    });
+  } catch (error) {
+    return sendError(res, error.message, 'SEARCH_STUDENTS_FAILED', 500);
+  }
+};
+
+export const addStudent = async (req, res) => {
+  try {
+    const { studentId } = req.body;
+
+    if (!studentId) {
+      return sendError(res, 'studentId is required', 'MISSING_STUDENT_ID', 400);
+    }
+
+    const student = await User.findOne({ _id: studentId, role: 'student' }).select('name email role');
+    if (!student) {
+      return sendError(res, 'Student not found', 'STUDENT_NOT_FOUND', 404);
+    }
+
+    req.tutor.studentIds = req.tutor.studentIds || [];
+    const alreadyAdded = req.tutor.studentIds.some(id => id.toString() === studentId.toString());
+
+    if (!alreadyAdded) {
+      req.tutor.studentIds.push(student._id);
+      await req.tutor.save();
+    }
+
+    return sendSuccess(res, {
+      student,
+      alreadyAdded
+    });
+  } catch (error) {
+    return sendError(res, error.message, 'ADD_STUDENT_FAILED', 500);
   }
 };
 

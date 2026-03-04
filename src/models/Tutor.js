@@ -25,7 +25,8 @@ const tutorSchema = new mongoose.Schema({
   googleOAuthConnectedAt: { type: Date },
   googleOAuthRevokedAt: { type: Date },
   hourlyRate: { type: Number, default: 0 },
-  verified: { type: Boolean, default: false }
+  verified: { type: Boolean, default: false },
+  studentIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }]
 }, { timestamps: true });
 
 const Tutor = mongoose.model('Tutor', tutorSchema);

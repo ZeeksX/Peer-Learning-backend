@@ -3,6 +3,7 @@ import { getHome, getHealth } from '../controllers/homeController.js';
 import tutorRoutes from './tutorRoutes.js';
 import learnerRoutes from './learnerRoutes.js';
 import chatRoutes from './chatRoutes.js';
+import notificationRoutes from './notificationRoutes.js';
 
 const router = express.Router();
 
@@ -17,5 +18,8 @@ router.use('/v1/learner', learnerRoutes);
 
 // Chat routes (both roles)
 router.use('/v1/chat', chatRoutes);
+
+// Notification routes (both roles)
+router.use('/v1/notifications', notificationRoutes);
 
 export default router;

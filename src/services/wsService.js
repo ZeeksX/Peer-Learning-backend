@@ -19,6 +19,10 @@ export const broadcast = (userId, event, data) => {
     }
 };
 
+export const emitNotification = (userId, data) => {
+    broadcast(userId, 'notification:new', data);
+};
+
 /**
  * Emit an event to all participants of a conversation EXCEPT the excluded user.
  */
@@ -45,6 +49,9 @@ const formatMessage = (msg, sender) => ({
     },
     text: msg.text,
     read: msg.read,
+    isEdited: msg.isEdited || false,
+    editedAt: msg.editedAt || null,
+    reactions: msg.reactions || [],
     createdAt: msg.createdAt
 });
 
@@ -82,21 +89,21 @@ export const initWS = (server) => {
             // --- message:send ---
             if (event === 'message:send') {
                 const { conversationId, text, tempId } = data || {};
-                if (!conversationId || !text?.trim()) return;
+                if (!conversationId || !text || text.trim().length === 0) return;
                 try {
                     const conversation = await Conversation.findById(conversationId);
                     if (!conversation) return;
                     if (!conversation.participants.some(p => p.toString() === userId)) return;
 
                     const sender = await User.findById(userId).select('name avatar');
-                    const msg = await ChatMessage.create({ conversationId, senderId: userId, text: text.trim() });
+                    const msg = await ChatMessage.create({ conversationId, senderId: userId, text });
 
-                    // Update conversation denorm fields
+                    // Update conversation denorm fields (use single-line for preview)
                     const recipientId = conversation.participants.find(p => p.toString() !== userId);
                     const unreadCounts = conversation.unreadCounts || new Map();
                     const recipientKey = recipientId?.toString();
                     if (recipientKey) unreadCounts.set(recipientKey, (unreadCounts.get(recipientKey) || 0) + 1);
-                    conversation.lastMessage = text.trim();
+                    conversation.lastMessage = text.replace(/\n/g, ' ').trim();
                     conversation.lastMessageAt = msg.createdAt;
                     conversation.unreadCounts = unreadCounts;
                     await conversation.save();

@@ -6,9 +6,49 @@ import {
   getGoogleOAuthStatus,
   refreshGoogleOAuth,
   revokeGoogleOAuth,
-  handleOAuthCallback
+  handleOAuthCallback,
+  generateSimpleMeetLink,
+  generateInstantMeetLink
 } from '../services/googleMeetService.js';
 import { sendSuccess, sendError } from '../middleware/responseHandler.js';
+
+/**
+ * POST /v1/tutor/google-meet/simple
+ * Generate a simple meet link without OAuth (no Google account connection needed).
+ */
+export const createSimpleMeetLink = async (req, res) => {
+  try {
+    const { sessionId } = req.body;
+    const tutorId = req.tutor?._id;
+
+    if (!tutorId) {
+      return sendError(res, 'Tutor authentication required', 'AUTH_REQUIRED', 401);
+    }
+
+    const meeting = generateSimpleMeetLink({ 
+      tutorId, 
+      sessionId,
+      prefix: 'tutor'
+    });
+
+    return sendSuccess(res, meeting, 201);
+  } catch (error) {
+    return sendError(res, error.message, error.code || 'GOOGLE_MEET_FAILED', error.status || 500);
+  }
+};
+
+/**
+ * POST /v1/tutor/google-meet/instant
+ * Generate an instant meet.new link (creates random meeting when visited).
+ */
+export const createInstantMeetLink = async (req, res) => {
+  try {
+    const meeting = generateInstantMeetLink();
+    return sendSuccess(res, meeting, 201);
+  } catch (error) {
+    return sendError(res, error.message, error.code || 'GOOGLE_MEET_FAILED', error.status || 500);
+  }
+};
 
 export const createMeeting = async (req, res) => {
   try {

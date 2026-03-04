@@ -4,6 +4,48 @@ import crypto from 'crypto';
 import GoogleMeetMeeting from '../models/GoogleMeetMeeting.js';
 import Tutor from '../models/Tutor.js';
 
+/**
+ * Generate a simple Google Meet link without OAuth.
+ * This creates a deterministic meet code based on a seed (tutorId + optional sessionId).
+ * Users can manually create the meeting by visiting the link.
+ */
+export const generateSimpleMeetLink = ({ tutorId, sessionId = null, prefix = 'tutorsession' }) => {
+  // Create a deterministic code from tutorId and optional sessionId
+  const seed = sessionId ? `${tutorId}-${sessionId}` : tutorId.toString();
+  const hash = crypto.createHash('sha256').update(seed).digest('hex');
+  
+  // Google Meet codes are typically 3 segments of 3-4 letters each (e.g., abc-defg-hij)
+  // Generate a valid looking code from the hash
+  const segment1 = hash.substring(0, 3);
+  const segment2 = hash.substring(3, 7);
+  const segment3 = hash.substring(7, 10);
+  
+  const meetCode = `${prefix}-${segment1}-${segment2}-${segment3}`;
+  const joinUrl = `https://meet.google.com/${meetCode}`;
+  
+  return {
+    joinUrl,
+    meetingId: meetCode,
+    provider: 'google_meet',
+    requiresOAuth: false,
+    note: 'Simple meet link - anyone with the link can join. First person to join creates the meeting.'
+  };
+};
+
+/**
+ * Generate an instant meet.new redirect link.
+ * This will create a new random meeting when the user visits the link.
+ */
+export const generateInstantMeetLink = () => {
+  return {
+    joinUrl: 'https://meet.google.com/new',
+    meetingId: `instant-${Date.now()}`,
+    provider: 'google_meet',
+    requiresOAuth: false,
+    note: 'Instant meet link - creates a new random meeting when visited'
+  };
+};
+
 // FIX 1: Removed GOOGLE_REFRESH_TOKEN from env — each tutor uses their own stored token.
 // requireRefreshToken only validates the client credentials, NOT a system-level token.
 const getOAuthClient = () => {

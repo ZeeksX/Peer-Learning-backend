@@ -6,7 +6,10 @@ import {
     createConversation,
     sendMessage,
     markRead,
-    getContacts
+    getContacts,
+    editMessage,
+    addReaction,
+    removeReaction
 } from '../controllers/chatController.js';
 import { protect } from '../middleware/authMiddleware.js';
 
@@ -30,5 +33,13 @@ router.route('/conversations/:conversationId/messages')
 
 // Mark conversation as read
 router.patch('/conversations/:conversationId/read', markRead);
+
+// Edit message
+router.patch('/messages/:messageId', editMessage);
+
+// Reactions
+router.route('/messages/:messageId/react')
+    .post(addReaction)
+    .delete(removeReaction);
 
 export default router;

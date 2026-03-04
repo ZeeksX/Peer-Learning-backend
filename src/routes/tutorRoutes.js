@@ -16,6 +16,8 @@ import {
   getConversations,
   sendMessage,
   getMyStudents,
+  searchStudents,
+  addStudent,
   getStudentProgress,
   getAnalyticsOverview,
   getEarningsAnalytics,
@@ -26,6 +28,8 @@ import {
 import {
   createMeeting,
   getPermanentLink,
+  createSimpleMeetLink,
+  createInstantMeetLink,
   startOAuth,
   oauthStatus,
   refreshOAuth,
@@ -63,6 +67,11 @@ router.route('/notifications')
 // --- Tutor Exclusive Routes ---
 router.use(tutorOnly);
 
+// Simple meet links (no OAuth required)
+router.post('/google-meet/simple', createSimpleMeetLink);
+router.post('/google-meet/instant', createInstantMeetLink);
+
+// OAuth-based meet links (requires Google account connection)
 router.post('/google-meet/create-meeting', createMeeting);
 router.post('/google-meet/permanent-link', getPermanentLink);
 router.get('/google-meet/oauth/start', startOAuth);
@@ -133,6 +142,12 @@ router.post('/sessions/:id/chat', async (req, res) => {
 });
 
 // Students
+router.route('/students/search')
+  .get(searchStudents);
+
+router.route('/students/add')
+  .post(addStudent);
+
 router.route('/students')
   .get(getMyStudents);
 router.route('/students/:studentId/progress')
