@@ -6,29 +6,18 @@ import Tutor from '../models/Tutor.js';
 
 /**
  * Generate a simple Google Meet link without OAuth.
- * This creates a deterministic meet code based on a seed (tutorId + optional sessionId).
- * Users can manually create the meeting by visiting the link.
+ * Uses Google's official quick-create URL instead of fabricated meeting codes.
  */
-export const generateSimpleMeetLink = ({ tutorId, sessionId = null, prefix = 'tutorsession' }) => {
-  // Create a deterministic code from tutorId and optional sessionId
-  const seed = sessionId ? `${tutorId}-${sessionId}` : tutorId.toString();
-  const hash = crypto.createHash('sha256').update(seed).digest('hex');
-  
-  // Google Meet codes are typically 3 segments of 3-4 letters each (e.g., abc-defg-hij)
-  // Generate a valid looking code from the hash
-  const segment1 = hash.substring(0, 3);
-  const segment2 = hash.substring(3, 7);
-  const segment3 = hash.substring(7, 10);
-  
-  const meetCode = `${prefix}-${segment1}-${segment2}-${segment3}`;
-  const joinUrl = `https://meet.google.com/${meetCode}`;
-  
+export const generateSimpleMeetLink = ({ tutorId, sessionId = null } = {}) => {
+  const nonce = crypto.randomBytes(6).toString('hex');
+  const suffix = sessionId ? `${sessionId}` : `${tutorId || 'session'}`;
+
   return {
-    joinUrl,
-    meetingId: meetCode,
+    joinUrl: 'https://meet.google.com/new',
+    meetingId: `quick-${suffix}-${nonce}`,
     provider: 'google_meet',
     requiresOAuth: false,
-    note: 'Simple meet link - anyone with the link can join. First person to join creates the meeting.'
+    note: 'Quick Meet link - opens Google Meet and creates a valid meeting instantly without OAuth.'
   };
 };
 

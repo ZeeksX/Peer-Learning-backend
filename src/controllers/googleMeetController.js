@@ -52,7 +52,25 @@ export const createInstantMeetLink = async (req, res) => {
 
 export const createMeeting = async (req, res) => {
   try {
-    const { tutorId, studentId, scheduledTime, meetingTitle, durationMinutes } = req.body;
+    const {
+      tutorId,
+      studentId,
+      scheduledTime,
+      meetingTitle,
+      durationMinutes,
+      quick,
+      fallbackToQuick = true
+    } = req.body;
+
+    if (quick === true) {
+      const meeting = generateInstantMeetLink();
+      return sendSuccess(res, {
+        ...meeting,
+        mode: 'quick',
+        warning: 'Quick mode used: OAuth/Calendar event was skipped.'
+      }, 201);
+    }
+
     const missingFields = ['tutorId', 'studentId', 'scheduledTime', 'meetingTitle'].filter(
       (field) => !req.body[field]
     );
@@ -75,6 +93,14 @@ export const createMeeting = async (req, res) => {
 
     return sendSuccess(res, meeting, 201);
   } catch (error) {
+    if (fallbackToQuick !== false) {
+      const meeting = generateInstantMeetLink();
+      return sendSuccess(res, {
+        ...meeting,
+        mode: 'quick-fallback',
+        warning: `OAuth Meet creation failed; quick link returned instead. Reason: ${error.message}`
+      }, 201);
+    }
     return sendError(res, error.message, error.code || 'GOOGLE_MEET_FAILED', error.status || 500);
   }
 };
@@ -86,7 +112,8 @@ export const getPermanentLink = async (req, res) => {
       scheduledTime,
       meetingTitle,
       durationMinutes,
-      forceNew
+      forceNew,
+      fallbackToQuick = true
     } = req.body;
 
     const resolvedTutorId = tutorId || req.tutor?._id;
@@ -110,6 +137,14 @@ export const getPermanentLink = async (req, res) => {
 
     return sendSuccess(res, meeting, 201);
   } catch (error) {
+    if (fallbackToQuick !== false) {
+      const meeting = generateInstantMeetLink();
+      return sendSuccess(res, {
+        ...meeting,
+        mode: 'quick-fallback',
+        warning: `Permanent OAuth link failed; quick link returned instead. Reason: ${error.message}`
+      }, 201);
+    }
     return sendError(res, error.message, error.code || 'GOOGLE_MEET_FAILED', error.status || 500);
   }
 };

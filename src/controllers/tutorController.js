@@ -6,8 +6,11 @@ import Payment from '../models/Payment.js';
 import Review from '../models/Review.js';
 import Message from '../models/Message.js';
 import SessionJoinRequest from '../models/SessionJoinRequest.js';
+import ChatMessage from '../models/ChatMessage.js';
+import Conversation from '../models/Conversation.js';
 import { sendSuccess, sendError } from '../middleware/responseHandler.js';
 import { getOrCreatePermanentGoogleMeetLink, generateSimpleMeetLink } from '../services/googleMeetService.js';
+import { emitToConversation, broadcast } from '../services/wsService.js';
 
 // --- Profile Management ---
 export const getMyProfile = async (req, res) => {
@@ -36,6 +39,11 @@ export const updateMyProfile = async (req, res) => {
 // --- Session Scheduling ---
 export const createSession = async (req, res) => {
   try {
+    // Validate tutor authentication
+    if (!req.tutor) {
+      return sendError(res, 'Tutor profile not found', 'TUTOR_NOT_FOUND', 404);
+    }
+
     const {
       title,
       subject,
@@ -50,6 +58,26 @@ export const createSession = async (req, res) => {
       autoGenerateMeet = true, // New option to control auto-generation
     } = req.body;
 
+    // Validate required fields
+    if (!title || !subject || !startTime || !endTime) {
+      return sendError(
+        res,
+        'Missing required fields: title, subject, startTime, endTime',
+        'MISSING_FIELDS',
+        400
+      );
+    }
+
+    // Validate date/time values
+    const start = new Date(startTime);
+    const end = new Date(endTime);
+    if (isNaN(start.getTime()) || isNaN(end.getTime())) {
+      return sendError(res, 'Invalid startTime or endTime format', 'INVALID_DATE', 400);
+    }
+    if (end <= start) {
+      return sendError(res, 'endTime must be after startTime', 'INVALID_DATE_RANGE', 400);
+    }
+
     let meetingLink = clientMeetingLink || null;
     let meetingId = clientMeetingId || null;
     let meetingProvider_final = meetingProvider || 'google_meet';
@@ -58,7 +86,7 @@ export const createSession = async (req, res) => {
     if (!meetingLink && autoGenerateMeet !== false) {
       try {
         // Strategy 1: Try OAuth-based permanent link if tutor has connected Google
-        if (req.tutor.googleOAuthRefreshToken) {
+        if (req.tutor?.googleOAuthRefreshToken) {
           const durationMinutes = startTime && endTime
             ? Math.max(1, Math.ceil((new Date(endTime).getTime() - new Date(startTime).getTime()) / 60000))
             : 60;
@@ -113,7 +141,8 @@ export const createSession = async (req, res) => {
 
     return sendSuccess(res, session, 201);
   } catch (error) {
-    return sendError(res, error.message, 'CREATE_SESSION_FAILED', 500);
+    console.error('Error creating session:', error);
+    return sendError(res, error.message, error.code || 'CREATE_SESSION_FAILED', error.status || 500);
   }
 };
 
@@ -440,6 +469,151 @@ export const addStudent = async (req, res) => {
   }
 };
 
+export const addStudentToSession = async (req, res) => {
+  try {
+    const sessionId = req.params.sessionId || req.body.sessionId;
+    const studentId = req.body.studentId || req.params.studentId;
+
+    if (!sessionId) {
+      return sendError(res, 'sessionId is required', 'MISSING_SESSION_ID', 400);
+    }
+
+    if (!studentId) {
+      return sendError(res, 'studentId is required', 'MISSING_STUDENT_ID', 400);
+    }
+
+    const [session, student] = await Promise.all([
+      Session.findOne({ _id: sessionId, tutorId: req.tutor._id }),
+      User.findOne({ _id: studentId, role: 'student' }).select('name email role')
+    ]);
+
+    if (!session) {
+      return sendError(res, 'Session not found or access denied', 'SESSION_NOT_FOUND', 404);
+    }
+
+    if (!student) {
+      return sendError(res, 'Student not found', 'STUDENT_NOT_FOUND', 404);
+    }
+
+    session.studentIds = session.studentIds || [];
+    const alreadyAdded = session.studentIds.some((id) => id.toString() === student._id.toString());
+
+    if (!alreadyAdded && session.maxParticipants && session.studentIds.length >= session.maxParticipants) {
+      return sendError(res, 'Session is full', 'SESSION_FULL', 400);
+    }
+
+    if (!alreadyAdded) {
+      session.studentIds.push(student._id);
+      await session.save();
+    }
+
+    req.tutor.studentIds = req.tutor.studentIds || [];
+    const inTutorList = req.tutor.studentIds.some((id) => id.toString() === student._id.toString());
+    if (!inTutorList) {
+      req.tutor.studentIds.push(student._id);
+      await req.tutor.save();
+    }
+
+    const updatedSession = await Session.findById(session._id).populate('studentIds', 'name email avatar');
+
+    if (!alreadyAdded) {
+      broadcast(student._id, 'session:student-added', {
+        sessionId: session._id,
+        session: {
+          _id: updatedSession._id,
+          title: updatedSession.title,
+          subject: updatedSession.subject,
+          startTime: updatedSession.startTime,
+          endTime: updatedSession.endTime,
+          meetingLink: updatedSession.meetingLink,
+          tutorId: updatedSession.tutorId
+        }
+      });
+    }
+
+    return sendSuccess(res, {
+      session: {
+        _id: updatedSession._id,
+        title: updatedSession.title,
+        subject: updatedSession.subject,
+        studentIds: updatedSession.studentIds
+      },
+      student,
+      alreadyAdded
+    });
+  } catch (error) {
+    return sendError(res, error.message, 'ADD_STUDENT_TO_SESSION_FAILED', 500);
+  }
+};
+
+export const removeStudentFromSession = async (req, res) => {
+  try {
+    const sessionId = req.params.sessionId || req.body.sessionId;
+    const studentId = req.params.studentId || req.body.studentId;
+
+    if (!sessionId) {
+      return sendError(res, 'sessionId is required', 'MISSING_SESSION_ID', 400);
+    }
+
+    if (!studentId) {
+      return sendError(res, 'studentId is required', 'MISSING_STUDENT_ID', 400);
+    }
+
+    const session = await Session.findOne({ _id: sessionId, tutorId: req.tutor._id });
+    if (!session) {
+      return sendError(res, 'Session not found or access denied', 'SESSION_NOT_FOUND', 404);
+    }
+
+    const student = await User.findOne({ _id: studentId, role: 'student' }).select('name email role');
+    if (!student) {
+      return sendError(res, 'Student not found', 'STUDENT_NOT_FOUND', 404);
+    }
+
+    session.studentIds = session.studentIds || [];
+    const wasEnrolled = session.studentIds.some((id) => id.toString() === student._id.toString());
+
+    if (!wasEnrolled) {
+      return sendSuccess(res, {
+        session: {
+          _id: session._id,
+          title: session.title,
+          subject: session.subject,
+          studentIds: session.studentIds
+        },
+        student,
+        removed: false
+      });
+    }
+
+    session.studentIds = session.studentIds.filter((id) => id.toString() !== student._id.toString());
+    await session.save();
+
+    const updatedSession = await Session.findById(session._id).populate('studentIds', 'name email avatar');
+
+    broadcast(student._id, 'session:student-removed', {
+      sessionId: session._id,
+      session: {
+        _id: updatedSession._id,
+        title: updatedSession.title,
+        subject: updatedSession.subject
+      }
+    });
+
+    return sendSuccess(res, {
+      session: {
+        _id: updatedSession._id,
+        title: updatedSession.title,
+        subject: updatedSession.subject,
+        studentIds: updatedSession.studentIds
+      },
+      student,
+      removed: true
+    });
+  } catch (error) {
+    return sendError(res, error.message, 'REMOVE_STUDENT_FROM_SESSION_FAILED', 500);
+  }
+};
+
 export const getStudentProgress = async (req, res) => {
   try {
     const { studentId } = req.params;
@@ -625,5 +799,143 @@ export const sendMessage = async (req, res) => {
     return sendSuccess(res, newMessage, 201);
   } catch (error) {
     return sendError(res, error.message, 'SEND_MESSAGE_FAILED', 500);
+  }
+};
+
+// --- Session Chat ---
+export const getSessionChat = async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const limit = Math.max(1, Math.min(200, parseInt(req.query.limit, 10) || 50));
+
+    // Verify tutor owns this session
+    const session = await Session.findOne({ _id: sessionId, tutorId: req.tutor._id });
+    if (!session) return sendError(res, 'Session not found', 'SESSION_NOT_FOUND', 404);
+
+    // Find or create conversation for this session
+    const participants = [req.user._id, ...(session.studentIds || [])];
+    const sortedIds = participants.map(p => p.toString()).sort();
+
+    let conversation = await Conversation.findOne({
+      $expr: {
+        $and: [
+          { $eq: [{ $size: '$participants' }, participants.length] },
+          { $setIsSubset: ['$participants', participants] }
+        ]
+      }
+    });
+
+    if (!conversation) {
+      // Create session conversation if it doesn't exist
+      conversation = await Conversation.create({ participants: sortedIds });
+    }
+
+    // Fetch messages
+    const total = await ChatMessage.countDocuments({ conversationId: conversation._id });
+    const messages = await ChatMessage.find({ conversationId: conversation._id })
+      .populate('senderId', 'name avatar')
+      .sort({ createdAt: 1 })
+      .skip((page - 1) * limit)
+      .limit(limit);
+
+    const formatted = messages.map(msg => ({
+      _id: msg._id,
+      conversationId: msg.conversationId,
+      sender: msg.senderId?._id
+        ? { _id: msg.senderId._id, name: msg.senderId.name, avatar: msg.senderId.avatar || null }
+        : { _id: msg.senderId },
+      text: msg.text,
+      read: msg.read,
+      isEdited: msg.isEdited || false,
+      editedAt: msg.editedAt || null,
+      reactions: msg.reactions || [],
+      createdAt: msg.createdAt
+    }));
+
+    return sendSuccess(res, {
+      messages: formatted,
+      hasMore: page * limit < total,
+      total,
+      conversationId: conversation._id
+    });
+  } catch (error) {
+    return sendError(res, error.message, 'FETCH_SESSION_CHAT_FAILED', 500);
+  }
+};
+
+export const sendSessionChat = async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    const { text } = req.body;
+
+    if (!text || text.trim().length === 0) {
+      return sendError(res, 'text is required', 'VALIDATION_ERROR', 400);
+    }
+
+    // Verify tutor owns this session
+    const session = await Session.findOne({ _id: sessionId, tutorId: req.tutor._id });
+    if (!session) return sendError(res, 'Session not found', 'SESSION_NOT_FOUND', 404);
+
+    // Find or create conversation for this session
+    const participants = [req.user._id, ...(session.studentIds || [])];
+    const sortedIds = participants.map(p => p.toString()).sort();
+
+    let conversation = await Conversation.findOne({
+      $expr: {
+        $and: [
+          { $eq: [{ $size: '$participants' }, participants.length] },
+          { $setIsSubset: ['$participants', participants] }
+        ]
+      }
+    });
+
+    if (!conversation) {
+      conversation = await Conversation.create({ participants: sortedIds });
+    }
+
+    // Create message
+    const msg = await ChatMessage.create({
+      conversationId: conversation._id,
+      senderId: req.user._id,
+      text
+    });
+
+    const sender = await User.findById(req.user._id).select('name avatar');
+    const formatted = {
+      _id: msg._id,
+      conversationId: msg.conversationId,
+      sender: {
+        _id: sender._id,
+        name: sender.name,
+        avatar: sender.avatar || null
+      },
+      text: msg.text,
+      read: msg.read,
+      isEdited: msg.isEdited || false,
+      editedAt: msg.editedAt || null,
+      reactions: msg.reactions || [],
+      createdAt: msg.createdAt
+    };
+
+    // Update conversation denorm
+    conversation.lastMessage = text.replace(/\n/g, ' ').trim();
+    conversation.lastMessageAt = msg.createdAt;
+    await conversation.save();
+
+    // Broadcast to all participants via WebSocket
+    participants.forEach(participantId => {
+      if (participantId.toString() !== req.user._id.toString()) {
+        broadcast(participantId.toString(), 'message:new', {
+          conversationId: conversation._id,
+          sessionId,
+          message: formatted
+        });
+      }
+    });
+
+    return sendSuccess(res, formatted, 201);
+  } catch (error) {
+    return sendError(res, error.message, 'SEND_SESSION_CHAT_FAILED', 500);
   }
 };

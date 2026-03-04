@@ -4,6 +4,7 @@ import { createServer } from 'http';
 import cors from 'cors';
 import cookieParser from 'cookie-parser';
 import dotenv from 'dotenv';
+import path from 'path';
 import connectDB from './src/config/db.js';
 import routes from './src/routes/index.js';
 import { logger, errorHandler } from './src/middleware/errorMiddleware.js';
@@ -46,6 +47,7 @@ app.use(cookieParser());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(logger);
+app.use('/uploads', express.static(path.resolve('uploads')));
 
 // Routes
 app.use('/api', routes);

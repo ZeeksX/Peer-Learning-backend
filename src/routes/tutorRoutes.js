@@ -15,9 +15,13 @@ import {
   getMessages,
   getConversations,
   sendMessage,
+  getSessionChat,
+  sendSessionChat,
   getMyStudents,
   searchStudents,
   addStudent,
+  addStudentToSession,
+  removeStudentFromSession,
   getStudentProgress,
   getAnalyticsOverview,
   getEarningsAnalytics,
@@ -36,9 +40,15 @@ import {
   revokeOAuth,
   oauthCallback
 } from '../controllers/googleMeetController.js';
+import {
+  uploadMaterialFile,
+  getTutorMaterials,
+  deleteMaterial
+} from '../controllers/materialController.js';
 
 import { getNotifications, clearNotifications } from '../controllers/notificationController.js';
 import { protect, tutorOnly } from '../middleware/authMiddleware.js';
+import { uploadSingleMaterial } from '../middleware/uploadMiddleware.js';
 
 const router = express.Router();
 
@@ -89,8 +99,13 @@ router.route('/sessions')
   .get(getSessions)
   .post(createSession);
 
+// Session Chat — must be defined EARLY, before /sessions/:id pattern
+router.route('/sessions/:sessionId/chat')
+  .get(getSessionChat)
+  .post(sendSessionChat);
+
 // Join Requests review for tutors
-// MUST be defined before /sessions/:id
+// MUST be defined before /sessions/:id (with :paramId)
 router.route('/sessions/requests')
   .get(getSessionRequests);
 
@@ -113,33 +128,26 @@ router.route('/sessions/:sessionId/requests/:requestId/approve')
 router.route('/sessions/:sessionId/requests/:requestId/reject')
   .post(rejectSessionRequest);
 
+router.post('/sessions/:sessionId/students', addStudentToSession);
+router.post('/sessions/:sessionId/students/add', addStudentToSession);
+router.post('/sessions/:sessionId/students/:studentId', addStudentToSession);
+router.post('/sessions/:sessionId/enroll', addStudentToSession);
+router.delete('/sessions/:sessionId/students/:studentId', removeStudentFromSession);
+router.delete('/sessions/:sessionId/students/remove/:studentId', removeStudentFromSession);
+router.delete('/sessions/:sessionId/enroll/:studentId', removeStudentFromSession);
+
+// Single session route (comes after /chat route to avoid conflicts)
 router.route('/sessions/:id')
   .get(getSession)
   .patch(updateSession)
   .delete(deleteSession);
 
-// Session Chat — stub routes (returns empty data until persistent chat is built)
-// IMPORTANT: must be defined after /sessions/:id so Express doesn't swallow :id="chat"
-router.get('/sessions/:id/chat', async (req, res) => {
-  // TODO: replace with real ChatMessage model query
-  res.json({ success: true, data: [], messages: [] });
-});
-
-router.post('/sessions/:id/chat', async (req, res) => {
-  const { text } = req.body;
-  if (!text?.trim()) {
-    return res.status(400).json({ success: false, error: 'Message text is required' });
-  }
-  // TODO: persist to ChatMessage model + broadcast via WebSocket
-  res.status(201).json({
-    success: true,
-    data: {
-      id: Date.now().toString(),
-      text: text.trim(),
-      timestamp: new Date().toISOString(),
-    }
-  });
-});
+// Materials
+router.route('/materials')
+  .get(getTutorMaterials)
+  .post(uploadSingleMaterial, uploadMaterialFile);
+router.route('/materials/:id')
+  .delete(deleteMaterial);
 
 // Students
 router.route('/students/search')
