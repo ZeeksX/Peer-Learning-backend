@@ -57,6 +57,21 @@ const buildSessionResponse = (session) => {
   };
 };
 
+const toTokenSet = (values = []) => {
+  const tokens = new Set();
+  values
+    .filter(Boolean)
+    .forEach((value) => {
+      value
+        .toString()
+        .toLowerCase()
+        .split(/[^a-z0-9]+/)
+        .filter(Boolean)
+        .forEach((token) => tokens.add(token));
+    });
+  return tokens;
+};
+
 // --- Profile Management ---
 export const getMyProfile = async (req, res) => {
   try {
@@ -173,6 +188,120 @@ export const getMySessions = async (req, res) => {
     return sendSuccess(res, data);
   } catch (error) {
     return sendError(res, error.message, 'FETCH_SESSIONS_FAILED', 500);
+  }
+};
+
+export const getRecommendations = async (req, res) => {
+  try {
+    const limit = Math.max(1, Math.min(20, parseInt(req.query.limit, 10) || 8));
+    const learnerId = req.user._id;
+
+    const [profile, enrollments, requests, sessions] = await Promise.all([
+      LearnerProfile.findOne({ userId: learnerId }).populate('enrolledCourses', 'tags level title'),
+      Enrollment.find({ learnerId }).select('courseId'),
+      SessionJoinRequest.find({ learnerId }).select('sessionId status'),
+      Session.find({ status: { $in: ['scheduled', 'ongoing'] } })
+        .populate('courseId')
+        .populate({ path: 'tutorId', populate: { path: 'userId', select: 'name email role avatar' } })
+    ]);
+
+    const enrolledCourseIds = new Set((enrollments || []).map((entry) => entry.courseId?.toString()).filter(Boolean));
+    const requestBySessionId = new Map((requests || []).map((entry) => [entry.sessionId.toString(), entry.status]));
+
+    const interestTokens = toTokenSet(profile?.interests || []);
+    const goalTokens = toTokenSet(profile?.learningGoals || []);
+
+    (profile?.enrolledCourses || []).forEach((course) => {
+      (course?.tags || []).forEach((tag) => interestTokens.add(tag.toLowerCase()));
+      if (course?.title) {
+        toTokenSet([course.title]).forEach((token) => interestTokens.add(token));
+      }
+    });
+
+    const scored = sessions
+      .filter((session) => {
+        const isAlreadyInSession = (session.studentIds || []).some((id) => id.toString() === learnerId.toString());
+        if (isAlreadyInSession) return false;
+
+        const isFull = session.maxParticipants && (session.studentIds?.length || 0) >= session.maxParticipants;
+        if (isFull) return false;
+
+        return true;
+      })
+      .map((session) => {
+        const course = session.courseId && session.courseId._id ? session.courseId : null;
+        const tutor = session.tutorId && session.tutorId._id ? session.tutorId : null;
+
+        let score = 0;
+        const reasons = [];
+
+        const subjectTokens = toTokenSet([session.subject, session.title, session.description, ...(course?.tags || [])]);
+
+        const interestMatches = [...interestTokens].filter((token) => subjectTokens.has(token));
+        if (interestMatches.length > 0) {
+          score += Math.min(45, 15 + interestMatches.length * 8);
+          reasons.push('Matches your interests');
+        }
+
+        const goalMatches = [...goalTokens].filter((token) => subjectTokens.has(token));
+        if (goalMatches.length > 0) {
+          score += Math.min(25, 10 + goalMatches.length * 5);
+          reasons.push('Supports your learning goals');
+        }
+
+        if (course?._id && enrolledCourseIds.has(course._id.toString())) {
+          score += 18;
+          reasons.push('Related to a course you enrolled in');
+        }
+
+        const tutorRating = Number(tutor?.rating || 0);
+        if (tutorRating > 0) {
+          score += Math.min(20, tutorRating * 4);
+          if (tutorRating >= 4) reasons.push('Highly rated tutor');
+        }
+
+        const studentCount = session.studentIds?.length || 0;
+        if (studentCount > 0) {
+          score += Math.min(10, studentCount * 1.5);
+        }
+
+        const startsAt = session.startTime ? new Date(session.startTime) : null;
+        if (startsAt && !Number.isNaN(startsAt.getTime())) {
+          const now = Date.now();
+          const diffMs = startsAt.getTime() - now;
+          const diffDays = diffMs / (1000 * 60 * 60 * 24);
+          if (diffDays >= 0 && diffDays <= 7) {
+            score += 8;
+            reasons.push('Starts soon');
+          }
+        }
+
+        return {
+          session,
+          score,
+          reasons: reasons.length > 0 ? reasons : ['Popular with learners']
+        };
+      })
+      .sort((a, b) => {
+        if (b.score !== a.score) return b.score - a.score;
+        return new Date(a.session.startTime) - new Date(b.session.startTime);
+      })
+      .slice(0, limit);
+
+    const data = scored.map(({ session, score, reasons }) => ({
+      session: buildSessionResponse(session),
+      score,
+      reasons,
+      enrollmentStatus: requestBySessionId.get(session._id.toString()) || 'not_joined'
+    }));
+
+    return sendSuccess(res, {
+      recommendations: data,
+      generatedAt: new Date().toISOString(),
+      totalCandidates: sessions.length
+    });
+  } catch (error) {
+    return sendError(res, error.message, 'FETCH_RECOMMENDATIONS_FAILED', 500);
   }
 };
 

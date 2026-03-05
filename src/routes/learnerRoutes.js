@@ -9,6 +9,7 @@ import {
   updateProgress,
   getMySessions,
   browseSessions,
+  getRecommendations,
   getSessionDetails,
   joinSession,
   leaveSession,
@@ -40,6 +41,9 @@ router.use(learnerOnly);
 // Identity & Profile
 router.route('/me')
   .get(getMyProfile);
+
+router.route('/me/recommendations')
+  .get(getRecommendations);
 
 // Progress Management
 router.route('/me/progress')

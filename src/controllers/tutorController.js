@@ -421,16 +421,16 @@ export const searchStudents = async (req, res) => {
       User.countDocuments(query)
     ]);
 
-    // If sessionId provided, check enrollment in that specific session
+    const tutorStudentIds = new Set((req.tutor.studentIds || []).map(id => id.toString()));
+
+    // isAdded is session-specific so a learner can be added across multiple sessions.
     let sessionStudentIds = new Set();
     if (sessionId) {
       const session = await Session.findOne({ _id: sessionId, tutorId: req.tutor._id }).select('studentIds');
-      if (session) {
-        sessionStudentIds = new Set((session.studentIds || []).map(id => id.toString()));
+      if (!session) {
+        return sendError(res, 'Session not found', 'SESSION_NOT_FOUND', 404);
       }
-    } else {
-      // Otherwise check global tutor student list
-      sessionStudentIds = new Set((req.tutor.studentIds || []).map(id => id.toString()));
+      sessionStudentIds = new Set((session.studentIds || []).map(id => id.toString()));
     }
 
     const results = students.map(student => ({
@@ -439,7 +439,8 @@ export const searchStudents = async (req, res) => {
       email: student.email,
       role: student.role,
       createdAt: student.createdAt,
-      isAdded: sessionStudentIds.has(student._id.toString())
+      isAdded: sessionStudentIds.has(student._id.toString()),
+      isInTutorList: tutorStudentIds.has(student._id.toString())
     }));
 
     return sendSuccess(res, {
