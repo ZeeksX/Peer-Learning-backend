@@ -399,6 +399,7 @@ export const getMyStudents = async (req, res) => {
 export const searchStudents = async (req, res) => {
   try {
     const search = (req.query.search || '').trim();
+    const sessionId = req.query.sessionId || null;
     const page = Math.max(1, parseInt(req.query.page, 10) || 1);
     const limit = Math.max(1, Math.min(50, parseInt(req.query.limit, 10) || 20));
     const skip = (page - 1) * limit;
@@ -420,7 +421,17 @@ export const searchStudents = async (req, res) => {
       User.countDocuments(query)
     ]);
 
-    const existingStudentIds = new Set((req.tutor.studentIds || []).map(id => id.toString()));
+    // If sessionId provided, check enrollment in that specific session
+    let sessionStudentIds = new Set();
+    if (sessionId) {
+      const session = await Session.findOne({ _id: sessionId, tutorId: req.tutor._id }).select('studentIds');
+      if (session) {
+        sessionStudentIds = new Set((session.studentIds || []).map(id => id.toString()));
+      }
+    } else {
+      // Otherwise check global tutor student list
+      sessionStudentIds = new Set((req.tutor.studentIds || []).map(id => id.toString()));
+    }
 
     const results = students.map(student => ({
       _id: student._id,
@@ -428,7 +439,7 @@ export const searchStudents = async (req, res) => {
       email: student.email,
       role: student.role,
       createdAt: student.createdAt,
-      isAdded: existingStudentIds.has(student._id.toString())
+      isAdded: sessionStudentIds.has(student._id.toString())
     }));
 
     return sendSuccess(res, {
@@ -829,14 +840,26 @@ export const getSessionChat = async (req, res) => {
     const page = Math.max(1, parseInt(req.query.page, 10) || 1);
     const limit = Math.max(1, Math.min(200, parseInt(req.query.limit, 10) || 50));
 
-    // Verify tutor owns this session
-    const session = await Session.findOne({ _id: sessionId, tutorId: req.tutor._id });
+    // Verify user has access to this session (tutor or enrolled student)
+    const session = await Session.findById(sessionId);
     if (!session) return sendError(res, 'Session not found', 'SESSION_NOT_FOUND', 404);
+
+    const isTutor = req.tutor && req.tutor._id.toString() === session.tutorId.toString();
+    const isStudent = session.studentIds?.some(id => id.toString() === req.user._id.toString());
+
+    if (!isTutor && !isStudent) {
+      return sendError(res, 'You are not enrolled in this session', 'FORBIDDEN', 403);
+    }
 
     // Get pre-created group conversation for this session
     const conversation = await Conversation.findOne({ sessionId: session._id });
     if (!conversation) {
       return sendError(res, 'Session chat not found. Please try again.', 'CONVERSATION_NOT_FOUND', 404);
+    }
+
+    // Ensure user is in conversation participants
+    if (!conversation.participants.some(p => p.toString() === req.user._id.toString())) {
+      return sendError(res, 'You are not a participant in this conversation', 'FORBIDDEN', 403);
     }
 
     // Fetch messages
@@ -896,10 +919,14 @@ export const sendSessionChat = async (req, res) => {
       return sendError(res, 'You are not enrolled in this session', 'FORBIDDEN', 403);
     }
 
-    // Get pre-created group conversation for this session
+    // Ensure user is in conversation
     const conversation = await Conversation.findOne({ sessionId: session._id });
     if (!conversation) {
       return sendError(res, 'Session chat not found. Please try again.', 'CONVERSATION_NOT_FOUND', 404);
+    }
+
+    if (!conversation.participants.some(p => p.toString() === req.user._id.toString())) {
+      return sendError(res, 'You are not a participant in this conversation', 'FORBIDDEN', 403);
     }
 
     // Create message
@@ -932,9 +959,10 @@ export const sendSessionChat = async (req, res) => {
     await conversation.save();
 
     // Broadcast to all session participants via WebSocket
-    conversation.participants.forEach(participantId => {
-      if (participantId.toString() !== req.user._id.toString()) {
-        broadcast(participantId.toString(), 'message:new', {
+    const participantIds = conversation.participants.map(p => p.toString ? p.toString() : p);
+    participantIds.forEach(participantId => {
+      if (participantId !== req.user._id.toString()) {
+        broadcast(participantId, 'message:new', {
           conversationId: conversation._id,
           sessionId,
           message: formatted
