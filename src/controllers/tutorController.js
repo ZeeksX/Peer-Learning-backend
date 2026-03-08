@@ -11,6 +11,7 @@ import Conversation from '../models/Conversation.js';
 import { sendSuccess, sendError } from '../middleware/responseHandler.js';
 import { getOrCreatePermanentGoogleMeetLink, generateSimpleMeetLink } from '../services/googleMeetService.js';
 import { emitToConversation, broadcast } from '../services/wsService.js';
+import { createNotification } from '../services/notificationService.js';
 
 // --- Profile Management ---
 export const getMyProfile = async (req, res) => {
@@ -24,12 +25,28 @@ export const getMyProfile = async (req, res) => {
 
 export const updateMyProfile = async (req, res) => {
   try {
-    const { bio, subjects, hourlyRate, availability } = req.body;
+    const { name, email, bio, subjects, hourlyRate, availability } = req.body;
+
+    if (email) {
+      const existingUser = await User.findOne({ email, _id: { $ne: req.user._id } });
+      if (existingUser) {
+        return sendError(res, 'Email is already in use', 'EMAIL_ALREADY_IN_USE', 400);
+      }
+    }
+
+    const userUpdate = {};
+    if (typeof name === 'string') userUpdate.name = name.trim();
+    if (typeof email === 'string') userUpdate.email = email.trim().toLowerCase();
+    if (Object.keys(userUpdate).length > 0) {
+      await User.findByIdAndUpdate(req.user._id, userUpdate, { runValidators: true });
+    }
+
     const tutor = await Tutor.findOneAndUpdate(
       { userId: req.user._id },
       { bio, subjects, hourlyRate, availability },
       { new: true, runValidators: true }
-    );
+    ).populate('userId', 'name email role');
+
     return sendSuccess(res, tutor);
   } catch (error) {
     return sendError(res, error.message, 'UPDATE_PROFILE_FAILED', 500);
@@ -290,6 +307,25 @@ export const approveSessionRequest = async (req, res) => {
     request.status = 'approved';
     await request.save();
 
+    // Notify learner of approval
+    await createNotification({
+      userId: request.learnerId,
+      title: 'Session Request Approved',
+      message: `Your request to join "${session.title}" has been approved`,
+      type: 'SUCCESS',
+      data: {
+        sessionId: session._id,
+        session: {
+          _id: session._id,
+          title: session.title,
+          subject: session.subject,
+          startTime: session.startTime,
+          endTime: session.endTime,
+          meetingLink: session.meetingLink
+        }
+      }
+    });
+
     return sendSuccess(res, { requestId: request._id, status: 'approved' });
   } catch (error) {
     return sendError(res, error.message, 'APPROVE_SESSION_REQUEST_FAILED', 500);
@@ -317,6 +353,22 @@ export const rejectSessionRequest = async (req, res) => {
 
     request.status = 'rejected';
     await request.save();
+
+    // Notify learner of rejection
+    await createNotification({
+      userId: request.learnerId,
+      title: 'Session Request Declined',
+      message: `Your request to join "${session.title}" was declined`,
+      type: 'WARNING',
+      data: {
+        sessionId: session._id,
+        session: {
+          _id: session._id,
+          title: session.title,
+          subject: session.subject
+        }
+      }
+    });
 
     return sendSuccess(res, { requestId: request._id, status: 'rejected' });
   } catch (error) {
@@ -541,16 +593,23 @@ export const addStudentToSession = async (req, res) => {
         await conversation.save();
       }
 
-      broadcast(student._id, 'session:student-added', {
-        sessionId: session._id,
-        session: {
-          _id: updatedSession._id,
-          title: updatedSession.title,
-          subject: updatedSession.subject,
-          startTime: updatedSession.startTime,
-          endTime: updatedSession.endTime,
-          meetingLink: updatedSession.meetingLink,
-          tutorId: updatedSession.tutorId
+      // Create persistent notification (includes WebSocket broadcast)
+      await createNotification({
+        userId: student._id,
+        title: 'Added to Session',
+        message: `You have been added to the session "${updatedSession.title}"`,
+        type: 'INFO',
+        data: {
+          sessionId: session._id,
+          session: {
+            _id: updatedSession._id,
+            title: updatedSession.title,
+            subject: updatedSession.subject,
+            startTime: updatedSession.startTime,
+            endTime: updatedSession.endTime,
+            meetingLink: updatedSession.meetingLink,
+            tutorId: updatedSession.tutorId
+          }
         }
       });
     }
@@ -622,12 +681,19 @@ export const removeStudentFromSession = async (req, res) => {
       await conversation.save();
     }
 
-    broadcast(student._id, 'session:student-removed', {
-      sessionId: session._id,
-      session: {
-        _id: updatedSession._id,
-        title: updatedSession.title,
-        subject: updatedSession.subject
+    // Create persistent notification (includes WebSocket broadcast)
+    await createNotification({
+      userId: student._id,
+      title: 'Removed from Session',
+      message: `You have been removed from the session "${updatedSession.title}"`,
+      type: 'INFO',
+      data: {
+        sessionId: session._id,
+        session: {
+          _id: updatedSession._id,
+          title: updatedSession.title,
+          subject: updatedSession.subject
+        }
       }
     });
 
@@ -845,7 +911,13 @@ export const getSessionChat = async (req, res) => {
     const session = await Session.findById(sessionId);
     if (!session) return sendError(res, 'Session not found', 'SESSION_NOT_FOUND', 404);
 
-    const isTutor = req.tutor && req.tutor._id.toString() === session.tutorId.toString();
+    let currentTutorId = req.tutor?._id?.toString() || null;
+    if (!currentTutorId && req.user?.role === 'tutor') {
+      const tutorProfile = await Tutor.findOne({ userId: req.user._id }).select('_id');
+      currentTutorId = tutorProfile?._id?.toString() || null;
+    }
+
+    const isTutor = currentTutorId && currentTutorId === session.tutorId.toString();
     const isStudent = session.studentIds?.some(id => id.toString() === req.user._id.toString());
 
     if (!isTutor && !isStudent) {
@@ -899,7 +971,9 @@ export const getSessionChat = async (req, res) => {
 export const sendSessionChat = async (req, res) => {
   try {
     const { sessionId } = req.params;
-    let { text } = req.body;
+    // Accept both 'text' and 'message' field names for backward compatibility
+    let { text, message } = req.body;
+    text = text || message;
 
     if (!text || typeof text !== 'string' || text.trim().length === 0) {
       return sendError(res, 'Message text is required and cannot be empty', 'VALIDATION_ERROR', 400);
@@ -913,7 +987,13 @@ export const sendSessionChat = async (req, res) => {
     if (!session) return sendError(res, 'Session not found', 'SESSION_NOT_FOUND', 404);
 
     // Verify user is either the tutor or an enrolled student
-    const isTutor = req.tutor && req.tutor._id.toString() === session.tutorId.toString();
+    let currentTutorId = req.tutor?._id?.toString() || null;
+    if (!currentTutorId && req.user?.role === 'tutor') {
+      const tutorProfile = await Tutor.findOne({ userId: req.user._id }).select('_id');
+      currentTutorId = tutorProfile?._id?.toString() || null;
+    }
+
+    const isTutor = currentTutorId && currentTutorId === session.tutorId.toString();
     const isStudent = session.studentIds?.some(id => id.toString() === req.user._id.toString());
 
     if (!isTutor && !isStudent) {

@@ -1,8 +1,10 @@
 // src/routes/learnerRoutes.js
 import express from 'express';
-import { registerLearner, loginLearner, logoutLearner } from '../controllers/learnerAuthController.js';
+import { registerLearner, loginLearner, logoutLearner, changeLearnerPassword } from '../controllers/learnerAuthController.js';
+import { authLimiter, passwordChangeLimiter } from '../middleware/rateLimitMiddleware.js';
 import {
   getMyProfile,
+  updateMyProfile,
   getCourses,
   enrollInCourse,
   getMyProgress,
@@ -19,7 +21,8 @@ import {
   sendMessage,
   getMessages,
   rateSession,
-  getSessionRating
+  getSessionRating,
+  getTutors
 } from '../controllers/learnerController.js';
 import { getNotifications, clearNotifications } from '../controllers/notificationController.js';
 import { protect, learnerOnly } from '../middleware/authMiddleware.js';
@@ -27,20 +30,27 @@ import { protect, learnerOnly } from '../middleware/authMiddleware.js';
 const router = express.Router();
 
 // --- Public Routes ---
-router.post('/auth/register', registerLearner);
-router.post('/auth/login', loginLearner);
+router.post('/auth/register', authLimiter, registerLearner);
+router.post('/auth/login', authLimiter, loginLearner);
 router.post('/auth/logout', logoutLearner);
 
 // Course discovery (Keeping public as per your comment)
 router.get('/courses', getCourses);
 
+// Browse tutors (public - for top tutors section)
+router.get('/tutors', getTutors);
+
 // --- Protected Routes (Login Required) ---
 router.use(protect);
 router.use(learnerOnly);
 
+// Security settings
+router.post('/auth/change-password', passwordChangeLimiter, changeLearnerPassword);
+
 // Identity & Profile
 router.route('/me')
-  .get(getMyProfile);
+  .get(getMyProfile)
+  .patch(updateMyProfile);
 
 router.route('/me/recommendations')
   .get(getRecommendations);

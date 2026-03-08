@@ -1,6 +1,7 @@
 // src/routes/tutorRoutes.js
 import express from 'express';
-import { registerTutor, loginTutor, logoutTutor } from '../controllers/tutorAuthController.js';
+import { registerTutor, loginTutor, logoutTutor, changeTutorPassword } from '../controllers/tutorAuthController.js';
+import { authLimiter, passwordChangeLimiter } from '../middleware/rateLimitMiddleware.js';
 import {
   getMyProfile,
   updateMyProfile,
@@ -53,14 +54,17 @@ import { uploadSingleMaterial } from '../middleware/uploadMiddleware.js';
 const router = express.Router();
 
 // --- Public Routes ---
-router.post('/auth/register', registerTutor);
-router.post('/auth/login', loginTutor);
+router.post('/auth/register', authLimiter, registerTutor);
+router.post('/auth/login', authLimiter, loginTutor);
 router.post('/auth/logout', logoutTutor);
 
 router.get('/google-meet/oauth/callback', oauthCallback);
 
 // --- Protected Routes (Must be Logged In) ---
 router.use(protect);
+
+// Security settings
+router.post('/auth/change-password', passwordChangeLimiter, changeTutorPassword);
 
 // Messaging
 router.route('/messages')
@@ -101,7 +105,8 @@ router.route('/sessions')
 
 // Session Chat — must be defined EARLY, before /sessions/:id pattern
 router.route('/sessions/:sessionId/chat')
-  .get(getSessionChat);
+  .get(getSessionChat)
+  .post(sendSessionChat);
 
 // Join Requests review for tutors
 // MUST be defined before /sessions/:id (with :paramId)

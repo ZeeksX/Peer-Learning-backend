@@ -24,6 +24,7 @@ import Session from '../models/Session.js';
 import SessionJoinRequest from '../models/SessionJoinRequest.js';
 import Review from '../models/Review.js';
 import Tutor from '../models/Tutor.js';
+import User from '../models/User.js';
 import { sendSuccess, sendError } from '../middleware/responseHandler.js';
 
 const buildSessionResponse = (session) => {
@@ -79,6 +80,46 @@ export const getMyProfile = async (req, res) => {
     return sendSuccess(res, profile);
   } catch (error) {
     return sendError(res, error.message, 'FETCH_PROFILE_FAILED', 500);
+  }
+};
+
+export const updateMyProfile = async (req, res) => {
+  try {
+    const { name, email, interests, learningGoals } = req.body;
+
+    if (email) {
+      const existingUser = await User.findOne({ email, _id: { $ne: req.user._id } });
+      if (existingUser) {
+        return sendError(res, 'Email is already in use', 'EMAIL_ALREADY_IN_USE', 400);
+      }
+    }
+
+    const userUpdate = {};
+    if (typeof name === 'string') userUpdate.name = name.trim();
+    if (typeof email === 'string') userUpdate.email = email.trim().toLowerCase();
+
+    if (Object.keys(userUpdate).length > 0) {
+      await User.findByIdAndUpdate(req.user._id, userUpdate, { runValidators: true });
+    }
+
+    const profileUpdate = {};
+    if (Array.isArray(interests)) profileUpdate.interests = interests;
+    if (Array.isArray(learningGoals)) profileUpdate.learningGoals = learningGoals;
+
+    if (Object.keys(profileUpdate).length > 0) {
+      await LearnerProfile.findOneAndUpdate(
+        { userId: req.user._id },
+        profileUpdate,
+        { new: true, runValidators: true, upsert: true }
+      );
+    }
+
+    const updatedProfile = await LearnerProfile.findOne({ userId: req.user._id })
+      .populate('userId', 'name email role');
+
+    return sendSuccess(res, updatedProfile);
+  } catch (error) {
+    return sendError(res, error.message, 'UPDATE_PROFILE_FAILED', 500);
   }
 };
 
@@ -312,7 +353,7 @@ export const browseSessions = async (req, res) => {
       subject,
       level,
       maxPrice,
-      sortBy = 'upcoming',
+      sortBy = 'recommended',
       page = 1,
       limit = 20
     } = req.query;
@@ -323,6 +364,18 @@ export const browseSessions = async (req, res) => {
     const subjectValue = subject?.toString().trim().toLowerCase();
     const levelValue = level?.toString().trim();
     const maxPriceValue = maxPrice !== undefined ? Number(maxPrice) : null;
+
+    // Fetch learner profile for personalized recommendations
+    const learnerProfile = await LearnerProfile.findOne({ userId: req.user._id }).lean();
+    const learnerInterests = (learnerProfile?.interests || []).map(i => i.toLowerCase());
+    const learnerGoals = (learnerProfile?.learningGoals || []).map(g => g.toLowerCase());
+
+    // Fetch sessions learner has previously attended
+    const previousSessions = await Session.find({ 
+      studentIds: req.user._id,
+      status: { $in: ['completed', 'ongoing'] }
+    }).select('subject').lean();
+    const previousSubjects = [...new Set(previousSessions.map(s => s.subject?.toLowerCase()).filter(Boolean))];
 
     const sessions = await Session.find()
       .populate('courseId')
@@ -356,7 +409,54 @@ export const browseSessions = async (req, res) => {
       return true;
     });
 
+    // Calculate relevance score for smart recommendations
+    filtered = filtered.map(session => {
+      let relevanceScore = 0;
+      const sessionSubject = session.subject?.toLowerCase() || '';
+      const sessionTitle = session.title?.toLowerCase() || '';
+      const sessionDesc = session.description?.toLowerCase() || '';
+      const courseTags = session.courseId?.tags?.map(t => t.toLowerCase()) || [];
+
+      // +5 points: Previously attended similar subject
+      if (previousSubjects.includes(sessionSubject)) {
+        relevanceScore += 5;
+      }
+
+      // +3 points per matching interest
+      learnerInterests.forEach(interest => {
+        if (sessionSubject.includes(interest) || 
+            sessionTitle.includes(interest) || 
+            sessionDesc.includes(interest) ||
+            courseTags.some(tag => tag.includes(interest))) {
+          relevanceScore += 3;
+        }
+      });
+
+      // +2 points per matching learning goal
+      learnerGoals.forEach(goal => {
+        if (sessionSubject.includes(goal) || 
+            sessionTitle.includes(goal) || 
+            sessionDesc.includes(goal) ||
+            courseTags.some(tag => tag.includes(goal))) {
+          relevanceScore += 2;
+        }
+      });
+
+      // +1 point for highly rated tutors
+      if (session.tutorId?.rating >= 4.5) {
+        relevanceScore += 1;
+      }
+
+      return { ...session.toObject ? session.toObject() : session, _relevanceScore: relevanceScore };
+    });
+
     const sortHandlers = {
+      recommended: (a, b) => {
+        // Sort by relevance score (highest first), then by upcoming
+        const scoreDiff = (b._relevanceScore || 0) - (a._relevanceScore || 0);
+        if (scoreDiff !== 0) return scoreDiff;
+        return new Date(a.startTime) - new Date(b.startTime);
+      },
       upcoming: (a, b) => new Date(a.startTime) - new Date(b.startTime),
       popular: (a, b) => (b.studentIds?.length || 0) - (a.studentIds?.length || 0),
       newest: (a, b) => new Date(b.createdAt) - new Date(a.createdAt),
@@ -372,7 +472,7 @@ export const browseSessions = async (req, res) => {
       }
     };
 
-    const sorter = sortHandlers[sortBy] || sortHandlers.upcoming;
+    const sorter = sortHandlers[sortBy] || sortHandlers.recommended;
     filtered = filtered.sort(sorter);
 
     const total = filtered.length;
@@ -614,5 +714,67 @@ export const getSessionRating = async (req, res) => {
     return sendSuccess(res, review || null);
   } catch (error) {
     return sendError(res, error.message, 'FETCH_RATING_FAILED', 500);
+  }
+};
+
+// Fetch tutors (for top tutors section on dashboard)
+export const getTutors = async (req, res) => {
+  try {
+    const { sort = '-rating', limit = 10, page = 1, topRated = 'true' } = req.query;
+    const pageNum = Math.max(1, parseInt(page, 10));
+    const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10)));
+    const skip = (pageNum - 1) * limitNum;
+
+    // Build query - for top rated tutors, show only those with reviews
+    const query = { verified: true };
+    if (topRated === 'true' && sort.includes('rating')) {
+      query.rating = { $gt: 0 }; // Only show tutors who have been rated
+    }
+
+    // Parse sort parameter (e.g., '-rating' for descending, 'name' for ascending)
+    const sortField = sort.startsWith('-') ? sort.substring(1) : sort;
+    const sortOrder = sort.startsWith('-') ? -1 : 1;
+    
+    // For rating sort, add reviewCount as secondary sort
+    const sortObj = sortField === 'rating' 
+      ? { rating: sortOrder, reviewCount: -1 } 
+      : { [sortField]: sortOrder };
+
+    // Fetch tutors with populated user data
+    const tutors = await Tutor.find(query)
+      .populate('userId', 'name email avatar')
+      .sort(sortObj)
+      .skip(skip)
+      .limit(limitNum)
+      .lean();
+
+    // Format response
+    const formattedTutors = tutors.map(tutor => ({
+      _id: tutor._id,
+      name: tutor.userId?.name || 'Unknown Tutor',
+      email: tutor.userId?.email || null,
+      avatar: tutor.userId?.avatar || null,
+      bio: tutor.bio || '',
+      subjects: tutor.subjects || [],
+      rating: tutor.rating || 0,
+      reviewCount: tutor.reviewCount || 0,
+      hourlyRate: tutor.hourlyRate || 0,
+      totalStudents: tutor.studentIds?.length || 0,
+      verified: tutor.verified || false
+    }));
+
+    const total = await Tutor.countDocuments(query);
+
+    return sendSuccess(res, {
+      tutors: formattedTutors,
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+        total,
+        hasMore: pageNum * limitNum < total
+      }
+    });
+  } catch (error) {
+    return sendError(res, error.message, 'FETCH_TUTORS_FAILED', 500);
   }
 };

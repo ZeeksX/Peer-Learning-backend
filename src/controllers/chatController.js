@@ -144,7 +144,9 @@ export const sendMessage = async (req, res) => {
     try {
         const { conversationId } = req.params;
         const myId = req.user._id;
-        const { text } = req.body;
+        // Accept both 'text' and 'message' field names for backward compatibility
+        let { text, message } = req.body;
+        text = text || message;
 
         // Check if message is empty or only whitespace, but preserve newlines in actual content
         if (!text || text.trim().length === 0) {

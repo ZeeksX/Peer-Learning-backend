@@ -6,8 +6,11 @@ const notificationSchema = new mongoose.Schema({
     title: { type: String, required: true },
     message: { type: String, required: true },
     read: { type: Boolean, default: false },
-    createdAt: { type: Date, default: Date.now }
-});
+    data: { type: mongoose.Schema.Types.Mixed, default: null }
+}, { timestamps: true });
+
+notificationSchema.index({ userId: 1, read: 1 });
+notificationSchema.index({ userId: 1, createdAt: -1 });
 
 const Notification = mongoose.model('Notification', notificationSchema);
 export default Notification;

@@ -124,3 +124,32 @@ export const logoutTutor = async (req, res) => {
   });
   return sendSuccess(res, { message: 'Logged out successfully' });
 };
+
+export const changeTutorPassword = async (req, res) => {
+  try {
+    const { currentPassword, newPassword } = req.body;
+
+    if (!currentPassword || !newPassword) {
+      return sendError(res, 'currentPassword and newPassword are required', 'MISSING_FIELDS', 400);
+    }
+
+    if (newPassword.length < 6) {
+      return sendError(res, 'New password must be at least 6 characters', 'WEAK_PASSWORD', 400);
+    }
+
+    const user = await User.findById(req.user._id);
+    if (!user) return sendError(res, 'User not found', 'USER_NOT_FOUND', 404);
+
+    const isMatch = await user.comparePassword(currentPassword);
+    if (!isMatch) {
+      return sendError(res, 'Current password is incorrect', 'INVALID_CURRENT_PASSWORD', 400);
+    }
+
+    user.password = newPassword;
+    await user.save();
+
+    return sendSuccess(res, { message: 'Password updated successfully' });
+  } catch (error) {
+    return sendError(res, error.message, 'CHANGE_PASSWORD_FAILED', 500);
+  }
+};

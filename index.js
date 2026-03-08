@@ -8,6 +8,7 @@ import path from 'path';
 import connectDB from './src/config/db.js';
 import routes from './src/routes/index.js';
 import { logger, errorHandler } from './src/middleware/errorMiddleware.js';
+import { apiLimiter } from './src/middleware/rateLimitMiddleware.js';
 import swaggerUi from 'swagger-ui-express';
 import openapiSpec from './src/docs/openapi.js';
 import { initWS } from './src/services/wsService.js';
@@ -50,7 +51,7 @@ app.use(logger);
 app.use('/uploads', express.static(path.resolve('uploads')));
 
 // Routes
-app.use('/api', routes);
+app.use('/api', apiLimiter, routes);
 app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(openapiSpec));
 
 // Root route
