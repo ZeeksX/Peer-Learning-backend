@@ -9,15 +9,24 @@ import Tutor from '../models/Tutor.js';
  * Uses Google's official quick-create URL instead of fabricated meeting codes.
  */
 export const generateSimpleMeetLink = ({ tutorId, sessionId = null } = {}) => {
-  const nonce = crypto.randomBytes(6).toString('hex');
-  const suffix = sessionId ? `${sessionId}` : `${tutorId || 'session'}`;
+  // Generate stable meeting room code from tutorId or sessionId
+  // Format: 3 groups of 3 lowercase letters/digits (e.g., abc-def-ghi)
+  // Google Meet accepts: https://meet.google.com/[room-code]
+  const baseId = sessionId ? sessionId.toString() : (tutorId ? tutorId.toString() : 'generic');
+  const hash = crypto.createHash('sha256').update(baseId).digest();
+  const characters = 'abcdefghijklmnopqrstuvwxyz0123456789';
+  let roomCode = '';
+  for (let i = 0; i < 9; i++) {
+    roomCode += characters[hash[i] % 36];
+    if (i === 2 || i === 5) roomCode += '-';
+  }
 
   return {
-    joinUrl: 'https://meet.google.com/new',
-    meetingId: `quick-${suffix}-${nonce}`,
+    joinUrl: `https://meet.google.com/${roomCode}`,
+    meetingId: roomCode,
     provider: 'google_meet',
     requiresOAuth: false,
-    note: 'Quick Meet link - opens Google Meet and creates a valid meeting instantly without OAuth.'
+    note: 'Stable Meet room code - same link for all participants without OAuth. Format: https://meet.google.com/xxx-xxx-xxx'
   };
 };
 

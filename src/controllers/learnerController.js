@@ -43,7 +43,7 @@ const buildSessionResponse = (session) => {
     startTime: session.startTime,
     endTime: session.endTime,
     duration,
-    maxParticipants: session.maxParticipants || 1,
+    maxParticipants: session.maxParticipants || 30,
     studentIds: (session.studentIds || []).map(id => id.toString()),
     createdAt: session.createdAt,
     tutor: {
@@ -496,7 +496,14 @@ export const getSessionDetails = async (req, res) => {
       .populate('courseId')
       .populate({ path: 'tutorId', populate: { path: 'userId', select: 'name email role' } });
     if (!session) return sendError(res, 'Session not found', 'SESSION_NOT_FOUND', 404);
-    return sendSuccess(res, buildSessionResponse(session));
+    const response = buildSessionResponse(session);
+    // Add capacity info for display
+    response.capacityInfo = {
+      current: session.studentIds?.length || 0,
+      max: session.maxParticipants || 30,
+      isFull: (session.studentIds?.length || 0) >= (session.maxParticipants || 30)
+    };
+    return sendSuccess(res, response);
   } catch (error) {
     return sendError(res, error.message, 'FETCH_SESSION_FAILED', 500);
   }
@@ -513,8 +520,11 @@ export const joinSession = async (req, res) => {
       learnerId: req.user._id
     });
 
-    if (!isStudent && session.maxParticipants && session.studentIds.length >= session.maxParticipants) {
-      return sendError(res, 'Session is full', 'SESSION_FULL', 409);
+    // Check if session is at capacity (only if maxParticipants is explicitly set and > 0)
+    const currentCount = session.studentIds?.length || 0;
+    const limit = session.maxParticipants || 30;
+    if (!isStudent && limit > 0 && currentCount >= limit) {
+      return sendError(res, `Session is full (${currentCount}/${limit} participants)`, 'SESSION_FULL', 409);
     }
 
     if (isStudent) {

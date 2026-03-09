@@ -98,6 +98,7 @@ export const createSession = async (req, res) => {
     let meetingLink = clientMeetingLink || null;
     let meetingId = clientMeetingId || null;
     let meetingProvider_final = meetingProvider || 'google_meet';
+    let needsSimpleMeetAfterCreate = false;
 
     // Auto-generate meet link if not provided
     if (!meetingLink && autoGenerateMeet !== false) {
@@ -118,27 +119,13 @@ export const createSession = async (req, res) => {
           meetingLink = permanentLink.joinUrl || null;
           meetingId = permanentLink.meetingId || null;
         } else {
-          // Strategy 2: Use simple meet link (no OAuth required)
-          const simpleMeet = generateSimpleMeetLink({
-            tutorId: req.tutor._id,
-            sessionId: null,
-            prefix: 'session'
-          });
-          
-          meetingLink = simpleMeet.joinUrl;
-          meetingId = simpleMeet.meetingId;
-          console.log('Generated simple meet link (no OAuth):', meetingLink);
+          // For non-OAuth tutors, wait until session exists so link is unique per session.
+          needsSimpleMeetAfterCreate = true;
         }
       } catch (meetErr) {
-        // Fallback: If OAuth fails, use simple meet link
+        // Fallback: If OAuth fails, generate a deterministic simple link after session creation.
         console.error('OAuth-based meet generation failed, falling back to simple link:', meetErr.message);
-        const simpleMeet = generateSimpleMeetLink({
-          tutorId: req.tutor._id,
-          sessionId: null,
-          prefix: 'session'
-        });
-        meetingLink = simpleMeet.joinUrl;
-        meetingId = simpleMeet.meetingId;
+        needsSimpleMeetAfterCreate = true;
       }
     }
 
@@ -153,8 +140,21 @@ export const createSession = async (req, res) => {
       meetingLink: meetingLink || undefined,
       meetingProvider: meetingLink ? meetingProvider_final : undefined,
       meetingId: meetingId || undefined,
-      maxParticipants: maxParticipants || 1,
+      maxParticipants: maxParticipants || 30,
     });
+
+    if (!meetingLink && needsSimpleMeetAfterCreate) {
+      const simpleMeet = generateSimpleMeetLink({
+        tutorId: req.tutor._id,
+        sessionId: session._id
+      });
+
+      session.meetingLink = simpleMeet.joinUrl;
+      session.meetingId = simpleMeet.meetingId;
+      session.meetingProvider = 'google_meet';
+      await session.save();
+      console.log('Generated session-specific simple meet link (no OAuth):', session.meetingLink);
+    }
 
     // Create group conversation for this session with tutor as initial participant
     await Conversation.create({
