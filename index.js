@@ -22,6 +22,16 @@ connectDB();
 const app = express();
 const PORT = process.env.PORT || 5000;
 
+// Required when running behind reverse proxies (e.g., Render) so req.ip and rate limiting work correctly.
+const trustProxySetting = process.env.TRUST_PROXY ?? (process.env.NODE_ENV === 'production' ? '1' : 'false');
+if (trustProxySetting === 'true') {
+  app.set('trust proxy', true);
+} else if (trustProxySetting === 'false') {
+  app.set('trust proxy', false);
+} else {
+  app.set('trust proxy', Number.isNaN(Number(trustProxySetting)) ? 1 : Number(trustProxySetting));
+}
+
 // Middleware
 const allowedOrigins = [
   process.env.FRONTEND_URL,
