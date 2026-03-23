@@ -7,6 +7,25 @@ import { broadcast, emitToConversation } from '../services/wsService.js';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
+/**
+ * Extracts all unique URLs from a string.
+ * Supports http/https and www links.
+ */
+export const extractLinks = (text) => {
+    if (!text) return [];
+    const urlRegex = /(https?:\/\/[^\s]+|www\.[^\s]+)/gi;
+    const matches = text.match(urlRegex);
+    if (!matches) return [];
+    
+    // Normalize and remove duplicates
+    return [...new Set(matches.map(link => {
+        if (link.toLowerCase().startsWith('www.')) {
+            return `https://${link}`;
+        }
+        return link;
+    }))];
+};
+
 const formatParticipant = (user) => ({
     _id: user._id,
     name: user.name,
@@ -36,6 +55,7 @@ const formatMessage = (msg) => ({
     read: msg.read,
     isEdited: msg.isEdited || false,
     editedAt: msg.editedAt || null,
+    links: msg.links || [],
     reactions: msg.reactions || [],
     createdAt: msg.createdAt
 });
@@ -159,8 +179,9 @@ export const sendMessage = async (req, res) => {
             return sendError(res, 'Access denied', 'FORBIDDEN', 403);
         }
 
-        // Store the message with newlines preserved
-        const msg = await ChatMessage.create({ conversationId, senderId: myId, text });
+        // Store the message with newlines preserved and links extracted
+        const links = extractLinks(text);
+        const msg = await ChatMessage.create({ conversationId, senderId: myId, text, links });
         const sender = await User.findById(myId).select('name avatar');
 
         // Update conversation denorm (use single-line version for preview)
@@ -281,6 +302,7 @@ export const editMessage = async (req, res) => {
         message.text = text;
         message.isEdited = true;
         message.editedAt = new Date();
+        message.links = extractLinks(text);
         await message.save();
 
         const sender = await User.findById(myId).select('name avatar');

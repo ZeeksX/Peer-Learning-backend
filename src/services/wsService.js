@@ -5,6 +5,7 @@ import { URL } from 'url';
 import ChatMessage from '../models/ChatMessage.js';
 import Conversation from '../models/Conversation.js';
 import User from '../models/User.js';
+import { extractLinks } from '../controllers/chatController.js';
 
 // Map of userId (string) -> WebSocket instance
 const onlineUsers = new Map();
@@ -51,6 +52,7 @@ const formatMessage = (msg, sender) => ({
     read: msg.read,
     isEdited: msg.isEdited || false,
     editedAt: msg.editedAt || null,
+    links: msg.links || [],
     reactions: msg.reactions || [],
     createdAt: msg.createdAt
 });
@@ -96,7 +98,8 @@ export const initWS = (server) => {
                     if (!conversation.participants.some(p => p.toString() === userId)) return;
 
                     const sender = await User.findById(userId).select('name avatar');
-                    const msg = await ChatMessage.create({ conversationId, senderId: userId, text });
+                    const links = extractLinks(text);
+                    const msg = await ChatMessage.create({ conversationId, senderId: userId, text, links });
 
                     // Update conversation denorm fields (use single-line for preview)
                     const recipientId = conversation.participants.find(p => p.toString() !== userId);

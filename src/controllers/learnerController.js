@@ -183,17 +183,22 @@ export const updateProgress = async (req, res) => {
     const { courseId } = req.params;
     const { moduleId } = req.body;
 
-    const progress = await Progress.findOneAndUpdate(
-      { learnerId: req.user._id, courseId },
-      {
-        $addToSet: { completedModules: moduleId },
-        lastAccessed: new Date()
-      },
-      { new: true }
-    );
-
+    let progress = await Progress.findOne({ learnerId: req.user._id, courseId }).populate('courseId');
     if (!progress) return sendError(res, 'Progress record not found', 'PROGRESS_NOT_FOUND', 404);
 
+    // Update completed modules
+    if (!progress.completedModules.includes(moduleId)) {
+      progress.completedModules.push(moduleId);
+    }
+    progress.lastAccessed = new Date();
+
+    // Calculate percentage if course has modules
+    const totalModules = progress.courseId?.modules?.length || 0;
+    if (totalModules > 0) {
+      progress.completionPercentage = Math.round((progress.completedModules.length / totalModules) * 100);
+    }
+
+    await progress.save();
     return sendSuccess(res, progress);
   } catch (error) {
     return sendError(res, error.message, 'UPDATE_PROGRESS_FAILED', 500);

@@ -7,6 +7,7 @@ const courseSchema = new mongoose.Schema({
   price: { type: Number, required: true },
   tags: [String],
   level: { type: String, enum: ['Beginner', 'Intermediate', 'Advanced'] },
+  modules: [{ type: String }], // Array of module titles or identifiers
   published: { type: Boolean, default: false }
 }, { timestamps: true });
 

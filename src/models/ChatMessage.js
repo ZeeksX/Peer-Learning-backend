@@ -8,6 +8,7 @@ const chatMessageSchema = new mongoose.Schema({
     read: { type: Boolean, default: false },
     isEdited: { type: Boolean, default: false },
     editedAt: { type: Date },
+    links: [{ type: String }],
     reactions: [{
         userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
         emoji: { type: String, required: true },
