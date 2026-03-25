@@ -19,7 +19,7 @@ const sessionSchema = new mongoose.Schema({
   },
   meetingLink: { type: String },
   // FIX: Added meetingProvider and meetingId — were being sent from frontend but not saved
-  meetingProvider: { type: String, enum: ['google_meet', 'zoom', 'teams', null], default: null },
+  meetingProvider: { type: String, enum: ['google_meet', 'zoom', 'teams', 'jitsi_meet', null], default: null },
   meetingId: { type: String },
   maxParticipants: { type: Number, default: 1 }
 }, { timestamps: true });

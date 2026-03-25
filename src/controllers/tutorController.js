@@ -151,7 +151,7 @@ export const createSession = async (req, res) => {
 
       session.meetingLink = simpleMeet.joinUrl;
       session.meetingId = simpleMeet.meetingId;
-      session.meetingProvider = 'google_meet';
+      session.meetingProvider = simpleMeet.provider;
       await session.save();
       console.log('Generated session-specific simple meet link (no OAuth):', session.meetingLink);
     }

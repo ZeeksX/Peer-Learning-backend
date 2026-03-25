@@ -22,11 +22,11 @@ export const generateSimpleMeetLink = ({ tutorId, sessionId = null } = {}) => {
   }
 
   return {
-    joinUrl: `https://meet.google.com/${roomCode}`,
+    joinUrl: `https://meet.jit.si/PeerLearn-${roomCode}`,
     meetingId: roomCode,
-    provider: 'google_meet',
+    provider: 'jitsi_meet',
     requiresOAuth: false,
-    note: 'Stable Meet room code - same link for all participants without OAuth. Format: https://meet.google.com/xxx-xxx-xxx'
+    note: 'Stable Jitsi Meet room code - same link for all participants without OAuth.'
   };
 };
 
@@ -35,12 +35,13 @@ export const generateSimpleMeetLink = ({ tutorId, sessionId = null } = {}) => {
  * This will create a new random meeting when the user visits the link.
  */
 export const generateInstantMeetLink = () => {
+  const roomCode = `instant-${Date.now()}`;
   return {
-    joinUrl: 'https://meet.google.com/new',
-    meetingId: `instant-${Date.now()}`,
-    provider: 'google_meet',
+    joinUrl: `https://meet.jit.si/PeerLearn-${roomCode}`,
+    meetingId: roomCode,
+    provider: 'jitsi_meet',
     requiresOAuth: false,
-    note: 'Instant meet link - creates a new random meeting when visited'
+    note: 'Instant jitsi meet link - works for all participants'
   };
 };
 

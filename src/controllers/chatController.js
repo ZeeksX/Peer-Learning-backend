@@ -69,7 +69,10 @@ const formatMessage = (msg) => ({
 export const getConversations = async (req, res) => {
     try {
         const myId = req.user._id;
-        const conversations = await Conversation.find({ participants: myId })
+        const conversations = await Conversation.find({ 
+            participants: myId,
+            sessionId: null 
+        })
             .populate('participants', 'name email role avatar')
             .sort({ lastMessageAt: -1 });
 
